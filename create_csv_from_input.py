@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""
+Skrypt do tworzenia plików CSV z danych wprowadzonych przez użytkownika
+"""
+from pathlib import Path
+
+OUTPUT_DIR = Path("/mnt/user-data/uploads")
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+print("=" * 70)
+print("KREATOR PLIKÓW CSV")
+print("=" * 70)
+print()
+print("Ten skrypt pomoże Ci stworzyć pliki CSV.")
+print()
+print("Możesz:")
+print("1. Skopiować zawartość pliku CSV z Notatnika")
+print("2. Wkleić tutaj")
+print("3. Zapisać jako plik")
+print()
+print("=" * 70)
+print()
+print("Przykład formatu CSV:")
+print()
+print("StudentID,FirstName,LastName,Grade,Email")
+print("1,Jan,Kowalski,10,jan@example.com")
+print("2,Anna,Nowak,11,anna@example.com")
+print()
+print("=" * 70)
+print()
+print(f"Pliki zostaną zapisane w: {OUTPUT_DIR}")
+print()
+print("Aby stworzyć plik, użyj:")
+print()
+print("  python -c \"")
+print("  content = '''")
+print("  <wklej zawartość CSV tutaj>")
+print("  '''")
+print("  with open('/mnt/user-data/uploads/Student.csv', 'w') as f:")
+print("      f.write(content)")
+print("  \"")
