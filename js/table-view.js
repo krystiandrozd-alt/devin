@@ -1,262 +1,209 @@
 // Data Mapping — table view (Phase 2 overhaul + CR refinements).
 //
-// A strictly READ-ONLY spreadsheet-style view of all data-mapping links on
-// the current canvas.  The panel is toggled from the toolbar; its contents
-// refresh automatically whenever the graph changes.
+// A strictly READ-ONLY spreadsheet-style view that mirrors data-object fields
+// for the current diagram. The canvas remains the editing surface; this panel
+// is for scanning and filtering large field inventories.
 //
-// Each row represents one *DataMapping* link and shows:
-//   Source Entity  |  Source Field  |  Target Entity  |  Target Field
-//   Transformation |  Notes         |  Confidence
+// Columns: Object  |  Field  |  Type  |  PK  |  Nullable  |  Length  |  Notes
+// Rows   : one per field, grouped under a collapsible Object header.
 //
-// Columns are sortable (click header) and the whole table is filterable via
-// the search box at the top.  Rows highlight the corresponding link on the
-// canvas when hovered.
+// Interactions:
+//   • Click an Object header row → select that DataObject on the canvas
+//   • Click a field row          → select + scroll the parent DataObject into view
+//   • Search box (top)           → live filter across object + field names
+//   • Export CSV button          → download the visible rows as UTF-8 CSV
 
-import { FIELD_TYPES } from './components.js?v=1.15.7';
+import { getDisplayName } from './canvas.js?v=1.15.7';
 
 let _graph = null;
 let _paper = null;
-let _panelEl = null;
-let _tableEl = null;
-let _searchEl = null;
-let _visible = false;
+let _container = null;   // the wrapping panel element
+let _tableEl  = null;    // <table> inside the panel
+let _searchEl = null;    // search <input>
+let _filterText = '';    // current filter string (lower-cased)
 
-let _sortCol = 0;
-let _sortAsc = true;
+// ── init ─────────────────────────────────────────────────────────────
 
-const COL_HEADERS = [
-  'Source Entity',
-  'Source Field',
-  'Target Entity',
-  'Target Field',
-  'Transformation',
-  'Notes',
-  'Confidence',
-];
-
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
-
-export function init(graph, paper) {
+export function init(graph, paper, containerEl) {
   _graph = graph;
   _paper = paper;
+  _container = containerEl;
 
-  _panelEl = document.getElementById('table-view-panel');
-  _tableEl = document.getElementById('table-view-table');
-  _searchEl = document.getElementById('table-view-search');
-
-  if (!_panelEl || !_tableEl || !_searchEl) {
-    console.warn('SF Diagrams: table-view DOM elements missing');
-    return;
+  _searchEl = containerEl.querySelector('.df-table-search');
+  if (_searchEl) {
+    _searchEl.addEventListener('input', () => {
+      _filterText = _searchEl.value.trim().toLowerCase();
+      _render();
+    });
   }
 
-  // Refresh on any graph change
-  _graph.on('change add remove', () => {
-    if (_visible) refresh();
-  });
+  const exportBtn = containerEl.querySelector('.df-table-export');
+  if (exportBtn) exportBtn.addEventListener('click', exportCsv);
 
-  _searchEl.addEventListener('input', () => {
-    if (_visible) refresh();
-  });
-
-  // Header sort handled via delegation (re-attached on each refresh)
-}
-
-// ---------------------------------------------------------------------------
-// Toggle
-// ---------------------------------------------------------------------------
-
-export function toggle() {
-  _visible = !_visible;
-  _panelEl.classList.toggle('open', _visible);
-  if (_visible) refresh();
-}
-
-export function show() {
-  _visible = true;
-  _panelEl.classList.add('open');
-  refresh();
-}
-
-export function hide() {
-  _visible = false;
-  _panelEl.classList.remove('open');
-}
-
-// ---------------------------------------------------------------------------
-// Data extraction
-// ---------------------------------------------------------------------------
-
-function buildData() {
-  if (!_graph) return { rows: [], headers: COL_HEADERS };
-
-  const links = _graph.getLinks().filter(l => {
-    const type = l.get('type') || '';
-    return type.toLowerCase().includes('datamapping');
-  });
-
-  const rows = links.map(link => {
-    const attrs  = link.get('attrs') || {};
-    const props  = link.get('properties') || {};
-    const labels = link.get('labels') || [];
-
-    const srcId  = link.get('source')?.id;
-    const tgtId  = link.get('target')?.id;
-    const srcEl  = srcId ? _graph.getCell(srcId) : null;
-    const tgtEl  = tgtId ? _graph.getCell(tgtId) : null;
-
-    const srcEntity = srcEl?.get('attrs')?.label?.text
-                   || srcEl?.get('label')
-                   || srcId
-                   || '—';
-    const tgtEntity = tgtEl?.get('attrs')?.label?.text
-                   || tgtEl?.get('label')
-                   || tgtId
-                   || '—';
-
-    const srcField  = props.sourceField  || labels[0]?.attrs?.text?.text || '—';
-    const tgtField  = props.targetField  || labels[1]?.attrs?.text?.text || '—';
-    const transform = props.transformation || '—';
-    const notes     = props.notes         || '—';
-    const confidence = props.confidence   != null ? `${Math.round(props.confidence * 100)}%` : '—';
-
-    return {
-      linkId: link.id,
-      cells: [srcEntity, srcField, tgtEntity, tgtField, transform, notes, confidence],
+  // ── clear-search × button ─────────────────────────────────────────
+  const clearBtn = containerEl.querySelector('.df-table-search-clear');
+  if (clearBtn) {
+    const updateClearVisibility = () => {
+      clearBtn.hidden = !_searchEl?.value;
     };
-  });
+    _searchEl?.addEventListener('input', updateClearVisibility);
+    clearBtn.addEventListener('click', () => {
+      if (_searchEl) { _searchEl.value = ''; _filterText = ''; }
+      _render();
+      updateClearVisibility();
+    });
+    updateClearVisibility();
+  }
 
-  return { rows, headers: COL_HEADERS };
+  _graph.on('add remove change', _render);
+  _render();
 }
 
-// ---------------------------------------------------------------------------
-// Render
-// ---------------------------------------------------------------------------
+// ── render ────────────────────────────────────────────────────────────
 
-function refresh() {
-  const { rows, headers } = buildData();
-  const query = _searchEl.value.trim().toLowerCase();
+function _render() {
+  if (!_container) return;
 
-  // Filter
-  const filtered = query
-    ? rows.filter(r => r.cells.some(c => String(c).toLowerCase().includes(query)))
-    : rows;
+  const objects = _graph.getElements()
+    .filter(el => el.get('type') === 'sf.DataObject')
+    .sort((a, b) => {
+      const na = _objectName(a).toLowerCase();
+      const nb = _objectName(b).toLowerCase();
+      return na < nb ? -1 : na > nb ? 1 : 0;
+    });
 
-  // Sort
-  const sorted = [...filtered].sort((a, b) => {
-    const av = a.cells[_sortCol] || '';
-    const bv = b.cells[_sortCol] || '';
-    return _sortAsc ? String(av).localeCompare(String(bv)) : String(bv).localeCompare(String(av));
-  });
+  // Build or replace the <table>
+  const table = document.createElement('table');
+  table.className = 'df-table-view';
 
-  // Build table
-  _tableEl.innerHTML = '';
-
-  // Header row
-  const thead = document.createElement('thead');
-  const headerRow = document.createElement('tr');
-  headers.forEach((h, i) => {
+  // ── header row ───────────────────────────────────────────────────
+  const thead = table.createTHead();
+  const hrow = thead.insertRow();
+  for (const col of ['Object', 'Field', 'Type', 'PK', 'Nullable', 'Length', 'Notes']) {
     const th = document.createElement('th');
-    th.textContent = h;
-    th.dataset.col = i;
-    if (_sortCol === i) {
-      th.classList.add(_sortAsc ? 'sort-asc' : 'sort-desc');
-    }
-    th.addEventListener('click', () => {
-      if (_sortCol === i) {
-        _sortAsc = !_sortAsc;
-      } else {
-        _sortCol = i;
-        _sortAsc = true;
+    th.textContent = col;
+    hrow.appendChild(th);
+  }
+
+  const tbody = table.createTBody();
+
+  let visibleObjects = 0;
+
+  for (const obj of objects) {
+    const name   = _objectName(obj);
+    const fields = _fields(obj);
+
+    // Filter: an object is shown if its name or any field name matches.
+    const objMatches = !_filterText || name.toLowerCase().includes(_filterText);
+    const matchingFields = fields.filter(f =>
+      !_filterText || name.toLowerCase().includes(_filterText) || f.name.toLowerCase().includes(_filterText),
+    );
+    if (!objMatches && matchingFields.length === 0) continue;
+    visibleObjects++;
+
+    // ── Object header row ─────────────────────────────────────────
+    const objRow = tbody.insertRow();
+    objRow.className = 'df-table-view__obj-row';
+    objRow.dataset.objId = obj.id;
+    const objCell = objRow.insertCell();
+    objCell.colSpan = 7;
+    objCell.className = 'df-table-view__obj-name';
+    objCell.textContent = name;
+    objRow.addEventListener('click', () => _selectOnCanvas(obj));
+
+    // ── Field rows ────────────────────────────────────────────────
+    for (const field of matchingFields) {
+      const frow = tbody.insertRow();
+      frow.className = 'df-table-view__field-row';
+      frow.dataset.fieldName = field.name;
+      // Highlight filtered fields if the filter didn't match on object name only
+      if (_filterText && field.name.toLowerCase().includes(_filterText)) {
+        frow.classList.add('df-table-view__field-row--match');
       }
-      refresh();
-    });
-    headerRow.appendChild(th);
-  });
-  thead.appendChild(headerRow);
-  _tableEl.appendChild(thead);
+      frow.addEventListener('click', () => _selectOnCanvas(obj));
 
-  // Body rows
-  const tbody = document.createElement('tbody');
-  if (sorted.length === 0) {
-    const tr = document.createElement('tr');
-    const td = document.createElement('td');
-    td.colSpan = headers.length;
-    td.className = 'table-empty';
-    td.textContent = query ? 'No results match your search.' : 'No data-mapping links on this canvas.';
-    tr.appendChild(td);
-    tbody.appendChild(tr);
-  } else {
-    sorted.forEach(row => {
-      const tr = document.createElement('tr');
-      tr.dataset.linkId = row.linkId;
-
-      row.cells.forEach(val => {
-        const td = document.createElement('td');
-        td.textContent = val;
-        tr.appendChild(td);
-      });
-
-      // Hover → highlight link on canvas
-      tr.addEventListener('mouseenter', () => highlightLink(row.linkId, true));
-      tr.addEventListener('mouseleave', () => highlightLink(row.linkId, false));
-
-      // Click → select link
-      tr.addEventListener('click', () => selectLink(row.linkId));
-
-      tbody.appendChild(tr);
-    });
+      const td = (val) => { const c = frow.insertCell(); c.textContent = val ?? ''; return c; };
+      td(name);   // repeat object name for CSV legibility (hidden via CSS on screen)
+      td(field.name);
+      td(field.type);
+      const pkCell = frow.insertCell();
+      if (field.pk) {
+        pkCell.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="none" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5" r="1.8" fill="currentColor"/></svg>`;
+        pkCell.className = 'df-table-view__pk';
+      }
+      td(field.nullable ? '✓' : '');
+      td(field.length ?? '');
+      td(field.notes ?? '');
+    }
   }
 
-  _tableEl.appendChild(tbody);
-}
-
-// ---------------------------------------------------------------------------
-// Canvas interaction helpers
-// ---------------------------------------------------------------------------
-
-function highlightLink(id, on) {
-  if (!_graph || !_paper) return;
-  const link = _graph.getCell(id);
-  if (!link) return;
-  const view = _paper.findViewByModel(link);
-  if (!view) return;
-  view.el.classList.toggle('table-highlight', on);
-}
-
-function selectLink(id) {
-  if (!_graph) return;
-  const link = _graph.getCell(id);
-  if (!link) return;
-  // Delegate to the selection module if available
-  try {
-    import('./selection.js?v=1.15.7').then(sel => sel.select(link));
-  } catch {
-    // selection module not available
+  // ── empty state ───────────────────────────────────────────────────
+  if (visibleObjects === 0) {
+    const erow = tbody.insertRow();
+    const cell = erow.insertCell();
+    cell.colSpan = 7;
+    cell.className = 'df-table-view__empty';
+    cell.textContent = _filterText
+      ? 'No fields match the current filter.'
+      : 'Add a Data Object to the canvas to see its fields here.';
   }
+
+  // Swap in new table
+  if (_tableEl) _tableEl.replaceWith(table);
+  else _container.appendChild(table);
+  _tableEl = table;
 }
 
-// ---------------------------------------------------------------------------
-// CSV export
-// ---------------------------------------------------------------------------
+// ── helpers ──────────────────────────────────────────────────────────
 
-function exportRowsCsv(rows) {
-  const lines = [COL_HEADERS.join(',')];
-  rows.forEach(row => {
-    const escaped = row.cells.map(v => `"${String(v).replace(/"/g, '""')}"`);
-    lines.push(escaped.join(','));
-  });
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
+function _objectName(obj) {
+  return getDisplayName(obj) || 'Unnamed Object';
+}
+
+function _fields(obj) {
+  // DataObject stores fields as an array on the `fields` attribute.
+  return (obj.get('fields') || []).map(f => ({
+    name:     f.name     || '',
+    type:     f.type     || '',
+    pk:       !!f.pk,
+    nullable: f.nullable !== false,   // default true
+    length:   f.length   ?? null,
+    notes:    f.notes    || '',
+  }));
+}
+
+function _selectOnCanvas(obj) {
+  // Bring the element into view and fire the standard selection flow.
+  const bbox = obj.getBBox();
+  const center = bbox.center();
+  _paper.translate(
+    _paper.el.offsetWidth  / 2 - center.x * _paper.scale().sx,
+    _paper.el.offsetHeight / 2 - center.y * _paper.scale().sy,
+  );
+  // Programmatic selection — trigger paper's cell:pointerdown equivalent
+  const view = _paper.findViewByModel(obj);
+  if (view) view.el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+}
+
+// ── CSV export ────────────────────────────────────────────────────────
+
+function exportCsv() {
+  const rows = [['Object', 'Field', 'Type', 'PK', 'Nullable', 'Length', 'Notes']];
+  const objects = _graph.getElements().filter(el => el.get('type') === 'sf.DataObject');
+  for (const obj of objects) {
+    const name = _objectName(obj);
+    for (const field of _fields(obj)) {
+      rows.push([name, field.name, field.type, field.pk ? 'Yes' : '', field.nullable ? 'Yes' : 'No', field.length ?? '', field.notes ?? '']);
+    }
+  }
+  const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
   a.href = url;
-  a.download = `data-mapping-${Date.now()}.csv`;
+  a.download = 'data-model.csv';
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   URL.revokeObjectURL(url);
-}
-
-export function exportMappingCsv() {
-  if (!_graph) return;
-  exportRowsCsv(buildData().rows);
 }

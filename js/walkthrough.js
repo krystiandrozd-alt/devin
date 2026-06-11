@@ -1,288 +1,216 @@
 // Contextual walkthrough — a first-party, zero-dependency guided tour. One generic tour
-// runs for first-time users; diagram-type–specific tours can be registered and triggered
-// from the relevant modules.  The walkthrough is fully keyboard-navigable.
+// runs for all diagram types; the step set can be filtered per type later if needed.
 //
-// Public API
-//   init()                           — wire up global listeners (call once)
-//   startTour(tourId)                — start a named tour (or 'default')
-//   registerTour(id, steps)          — add a custom tour
-//   endTour()                        — dismiss current tour
-//   onTourEnd(fn)                    — subscribe to tour-end events
+// The overlay uses a semi-transparent backdrop with a rectangular "spotlight" cut-out
+// that highlights the target element (via CSS clip-path or SVG mask). Steps are
+// declarative: each step names a CSS selector for the target element + a text blurb.
+// No third-party libraries are used (no Shepherd, Intro.js, etc.).
 
-const STORAGE_KEY = 'sf_diagram_walkthrough';
-
-// ---------------------------------------------------------------------------
-// Built-in default tour
-// ---------------------------------------------------------------------------
-
-const DEFAULT_TOUR = [
+const STEPS = [
   {
-    target: '#stencil-panel',
+    target: '#btn-toggle-stencil',
     title: 'Component Library',
-    body: 'Drag shapes from the panel on the left onto the canvas to build your diagram.',
-    position: 'right',
+    body: 'Open the Stencil to browse and drag ready-made shapes onto the canvas.',
+    placement: 'right',
   },
   {
     target: '#toolbar',
     title: 'Toolbar',
-    body: 'Use the toolbar to undo/redo, zoom, export, and switch diagram types.',
-    position: 'bottom',
+    body: 'Undo, redo, zoom, export, and more — all the common diagram actions live here.',
+    placement: 'bottom',
   },
   {
-    target: '#canvas',
+    target: '#canvas-container',
     title: 'Canvas',
-    body: 'Click a shape to select it.  Drag between connector ports to draw links.',
-    position: 'center',
+    body: 'This is your workspace. Drag shapes from the library, connect them with links, and arrange your diagram.',
+    placement: 'top',
   },
   {
     target: '#properties-panel',
-    title: 'Properties',
-    body: 'Select any element to edit its label, colour, and other attributes here.',
-    position: 'left',
+    title: 'Properties Panel',
+    body: 'Click any element to edit its label, colour, and type-specific settings here.',
+    placement: 'left',
+  },
+  {
+    target: '#btn-export',
+    title: 'Export',
+    body: 'Download your diagram as a PNG, SVG, or JSON file whenever you're ready.',
+    placement: 'bottom',
   },
 ];
 
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
+let _overlay = null;
+let _currentStep = 0;
+let _active = false;
 
-const tours = new Map([['default', DEFAULT_TOUR]]);
-let activeTour   = null;  // tour id string
-let activeSteps  = [];    // step array
-let activeIndex  = 0;     // current step index
-let cardEl       = null;  // floating card DOM element
-let overlayEl    = null;  // backdrop element
-const endListeners = new Set();
+// ── public API ───────────────────────────────────────────────────────
 
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
+export function startWalkthrough() {
+  if (_active) return;
+  _active = true;
+  _currentStep = 0;
+  _buildOverlay();
+  _showStep(_currentStep);
+}
 
-export function init() {
-  document.addEventListener('keydown', (e) => {
-    if (!activeTour) return;
-    if (e.key === 'Escape')           { endTour(); return; }
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') { nextStep(); return; }
-    if (e.key === 'ArrowLeft'  || e.key === 'ArrowUp')   { prevStep(); return; }
+export function stopWalkthrough() {
+  if (!_active) return;
+  _active = false;
+  _teardownOverlay();
+}
+
+export function isActive() {
+  return _active;
+}
+
+// ── overlay construction ─────────────────────────────────────────────
+
+function _buildOverlay() {
+  _overlay = document.createElement('div');
+  _overlay.className = 'df-walkthrough-overlay';
+  _overlay.setAttribute('role', 'dialog');
+  _overlay.setAttribute('aria-modal', 'true');
+  _overlay.setAttribute('aria-label', 'Guided walkthrough');
+
+  // Click on backdrop (outside the popover) → advance / dismiss
+  _overlay.addEventListener('click', (e) => {
+    if (e.target === _overlay) _advance();
   });
 
-  // Auto-start default tour for first-time visitors
-  try {
-    const state = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    if (!state.defaultCompleted) {
-      // Defer until DOM is fully ready
-      requestAnimationFrame(() => startTour('default'));
+  document.body.appendChild(_overlay);
+}
+
+function _teardownOverlay() {
+  if (_overlay) { _overlay.remove(); _overlay = null; }
+}
+
+// ── step rendering ────────────────────────────────────────────────────
+
+function _showStep(index) {
+  if (!_overlay) return;
+  _overlay.innerHTML = ''; // clear previous popover
+
+  const step = STEPS[index];
+  if (!step) { stopWalkthrough(); return; }
+
+  const targetEl = document.querySelector(step.target);
+  const targetRect = targetEl?.getBoundingClientRect();
+
+  // ── spotlight ─────────────────────────────────────────────────────
+  if (targetRect) {
+    const PAD = 6;
+    const spotX = targetRect.left - PAD;
+    const spotY = targetRect.top  - PAD;
+    const spotW = targetRect.width  + PAD * 2;
+    const spotH = targetRect.height + PAD * 2;
+    // Using CSS clip-path polygon with a hole isn't broadly supported yet,
+    // so we use four absolutely-positioned overlay quadrants instead.
+    const quads = [
+      { top: 0, left: 0, right: 0,   height: spotY },                                 // top
+      { top: spotY, left: 0,  width: spotX, bottom: 0 },                               // left
+      { top: spotY, left: spotX + spotW, right: 0, bottom: 0 },                        // right
+      { top: spotY + spotH, left: 0, right: 0, bottom: 0 },                            // bottom
+    ];
+    for (const q of quads) {
+      const div = document.createElement('div');
+      div.className = 'df-walkthrough-backdrop';
+      Object.assign(div.style, { position: 'fixed', background: 'rgba(0,0,0,0.45)' },
+        Object.fromEntries(Object.entries(q).map(([k,v]) => [k, typeof v === 'number' ? v+'px' : v])));
+      _overlay.appendChild(div);
     }
-  } catch {
-    // localStorage unavailable
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-export function registerTour(id, steps) {
-  tours.set(id, steps);
-}
-
-export function startTour(tourId = 'default') {
-  const steps = tours.get(tourId);
-  if (!steps || steps.length === 0) return;
-
-  // Clean up any running tour first
-  if (activeTour) teardown();
-
-  activeTour  = tourId;
-  activeSteps = steps;
-  activeIndex = 0;
-
-  buildOverlay();
-  renderStep(activeIndex);
-}
-
-export function endTour() {
-  if (!activeTour) return;
-  const id = activeTour;
-  teardown();
-  // Mark tour complete
-  try {
-    const state = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
-    state[`${id}Completed`] = true;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  } catch {
-    // noop
-  }
-  endListeners.forEach(fn => fn(id));
-}
-
-export function onTourEnd(fn) {
-  endListeners.add(fn);
-  return () => endListeners.delete(fn);
-}
-
-// ---------------------------------------------------------------------------
-// Step navigation
-// ---------------------------------------------------------------------------
-
-function nextStep() {
-  if (activeIndex < activeSteps.length - 1) {
-    activeIndex++;
-    renderStep(activeIndex);
   } else {
-    endTour();
+    // No target — full-screen backdrop
+    const div = document.createElement('div');
+    div.className = 'df-walkthrough-backdrop';
+    div.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.45)';
+    _overlay.appendChild(div);
   }
-}
 
-function prevStep() {
-  if (activeIndex > 0) {
-    activeIndex--;
-    renderStep(activeIndex);
-  }
-}
+  // ── popover ───────────────────────────────────────────────────────
+  const box = document.createElement('div');
+  box.className = 'df-walkthrough-box';
 
-// ---------------------------------------------------------------------------
-// DOM building
-// ---------------------------------------------------------------------------
-
-function buildOverlay() {
-  overlayEl = document.createElement('div');
-  overlayEl.className = 'walkthrough-overlay';
-  overlayEl.addEventListener('click', (e) => {
-    // Click outside the card closes the tour
-    if (!cardEl.contains(e.target)) endTour();
-  });
-  document.body.appendChild(overlayEl);
-}
-
-function renderStep(index) {
-  const step = activeSteps[index];
-  if (!step) return;
-
-  // Remove old card
-  if (cardEl) cardEl.remove();
-
-  cardEl = document.createElement('div');
-  cardEl.className = 'walkthrough-card';
-  cardEl.setAttribute('role', 'dialog');
-  cardEl.setAttribute('aria-modal', 'true');
-  cardEl.setAttribute('aria-label', step.title);
-
-  // Progress dots
-  const dots = document.createElement('div');
-  dots.className = 'walkthrough-dots';
-  activeSteps.forEach((_, i) => {
-    const dot = document.createElement('span');
-    dot.className = 'walkthrough-dot' + (i === index ? ' active' : '');
-    dots.appendChild(dot);
-  });
-
-  // Title
   const title = document.createElement('h3');
-  title.className = 'walkthrough-title';
+  title.className = 'df-walkthrough-title';
   title.textContent = step.title;
+  box.appendChild(title);
 
-  // Body
   const body = document.createElement('p');
-  body.className = 'walkthrough-body';
+  body.className = 'df-walkthrough-body';
   body.textContent = step.body;
+  box.appendChild(body);
 
-  // Buttons
-  const btnRow = document.createElement('div');
-  btnRow.className = 'walkthrough-btn-row';
+  // ── nav row ───────────────────────────────────────────────────────
+  const nav = document.createElement('div');
+  nav.className = 'df-walkthrough-nav';
 
-  const skipBtn = document.createElement('button');
-  skipBtn.className = 'walkthrough-btn walkthrough-skip';
-  skipBtn.textContent = 'Skip tour';
-  skipBtn.addEventListener('click', endTour);
+  const skip = document.createElement('button');
+  skip.type = 'button';
+  skip.className = 'df-walkthrough-btn df-walkthrough-btn--skip';
+  skip.textContent = 'Skip tour';
+  skip.addEventListener('click', stopWalkthrough);
+  nav.appendChild(skip);
 
-  const prevBtn = document.createElement('button');
-  prevBtn.className = 'walkthrough-btn walkthrough-prev';
-  prevBtn.textContent = '← Back';
-  prevBtn.disabled = index === 0;
-  prevBtn.addEventListener('click', prevStep);
+  const counter = document.createElement('span');
+  counter.className = 'df-walkthrough-counter';
+  counter.textContent = `${index + 1} / ${STEPS.length}`;
+  nav.appendChild(counter);
 
-  const nextBtn = document.createElement('button');
-  nextBtn.className = 'walkthrough-btn walkthrough-next';
-  nextBtn.textContent = index === activeSteps.length - 1 ? 'Finish ✓' : 'Next →';
-  nextBtn.addEventListener('click', nextStep);
+  const next = document.createElement('button');
+  next.type = 'button';
+  next.className = 'df-walkthrough-btn df-walkthrough-btn--next';
+  next.textContent = index === STEPS.length - 1 ? 'Finish' : 'Next';
+  next.addEventListener('click', _advance);
+  nav.appendChild(next);
 
-  btnRow.appendChild(skipBtn);
-  btnRow.appendChild(prevBtn);
-  btnRow.appendChild(nextBtn);
+  box.appendChild(nav);
+  _overlay.appendChild(box);
 
-  cardEl.appendChild(dots);
-  cardEl.appendChild(title);
-  cardEl.appendChild(body);
-  cardEl.appendChild(btnRow);
-
-  document.body.appendChild(cardEl);
-
-  positionCard(step);
-
-  // Focus the Next button for keyboard users
-  nextBtn.focus();
+  // ── position the popover beside the target ────────────────────────
+  _positionBox(box, targetRect, step.placement);
 }
 
-// ---------------------------------------------------------------------------
-// Card positioning
-// ---------------------------------------------------------------------------
+function _advance() {
+  _currentStep++;
+  if (_currentStep >= STEPS.length) { stopWalkthrough(); return; }
+  _showStep(_currentStep);
+}
 
-function positionCard(step) {
-  if (!cardEl) return;
+// ── popover positioning ───────────────────────────────────────────────
 
-  const target = step.target ? document.querySelector(step.target) : null;
+function _positionBox(box, rect, placement) {
+  const GAP = 12;
+  const vpW = window.innerWidth;
+  const vpH = window.innerHeight;
 
-  if (!target || step.position === 'center') {
-    // Centre on screen
-    cardEl.style.top  = '50%';
-    cardEl.style.left = '50%';
-    cardEl.style.transform = 'translate(-50%, -50%)';
-    return;
-  }
-
-  const rect = target.getBoundingClientRect();
-  const cw = cardEl.offsetWidth  || 280;
-  const ch = cardEl.offsetHeight || 160;
-  const M  = 12; // margin from target
-  const vw = window.innerWidth;
-  const vh = window.innerHeight;
+  // Measure the box first (rendered but off-screen)
+  box.style.position = 'fixed';
+  box.style.visibility = 'hidden';
+  document.body.appendChild(box); // temporary attach for measurement
+  const bw = box.offsetWidth  || 280;
+  const bh = box.offsetHeight || 120;
+  box.remove();
+  box.style.visibility = '';
 
   let top, left;
 
-  switch (step.position) {
-    case 'right':
-      top  = rect.top + rect.height / 2 - ch / 2;
-      left = rect.right + M;
-      break;
-    case 'left':
-      top  = rect.top + rect.height / 2 - ch / 2;
-      left = rect.left - cw - M;
-      break;
-    case 'bottom':
-      top  = rect.bottom + M;
-      left = rect.left + rect.width / 2 - cw / 2;
-      break;
-    case 'top':
-    default:
-      top  = rect.top - ch - M;
-      left = rect.left + rect.width / 2 - cw / 2;
+  if (!rect) {
+    // Centre on screen
+    top  = vpH / 2 - bh / 2;
+    left = vpW / 2 - bw / 2;
+  } else {
+    switch (placement) {
+      case 'right':  left = rect.right + GAP;                  top = rect.top + rect.height/2 - bh/2; break;
+      case 'left':   left = rect.left  - bw - GAP;             top = rect.top + rect.height/2 - bh/2; break;
+      case 'bottom': top  = rect.bottom + GAP;                 left = rect.left + rect.width/2 - bw/2; break;
+      case 'top':    top  = rect.top - bh - GAP;               left = rect.left + rect.width/2 - bw/2; break;
+      default:       top  = rect.bottom + GAP;                 left = rect.left;
+    }
+    // Clamp within viewport
+    left = Math.max(8, Math.min(left, vpW - bw - 8));
+    top  = Math.max(8, Math.min(top,  vpH - bh - 8));
   }
 
-  // Clamp to viewport
-  cardEl.style.position = 'fixed';
-  cardEl.style.left = `${Math.round(Math.max(M, Math.min(left, vw - cw - M)))}px`;
-  cardEl.style.top  = `${Math.round(Math.max(M, Math.min(top, vh - ch - M)))}px`;
-}
-
-// ---------------------------------------------------------------------------
-// Teardown
-// ---------------------------------------------------------------------------
-
-function teardown() {
-  if (cardEl)    { cardEl.remove();    cardEl    = null; }
-  if (overlayEl) { overlayEl.remove(); overlayEl = null; }
-  activeTour  = null;
-  activeSteps = [];
-  activeIndex = 0;
+  box.style.left = left + 'px';
+  box.style.top  = top  + 'px';
 }

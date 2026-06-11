@@ -32,458 +32,853 @@ export function init(_graph, _paper) {
   // clicks wipe the field and re-run the filter so the user can return to
   // the full palette without selecting + deleting.
   const clearBtn = document.getElementById('btn-stencil-search-clear');
-  const refreshClearVisibility = () =>
-    clearBtn.classList.toggle('visible', searchEl.value.length > 0);
-  searchEl.addEventListener('input', refreshClearVisibility);
-  clearBtn.addEventListener('click', () => {
-    searchEl.value = '';
+  const refreshClearVisibility = () => {
+    if (!clearBtn) return;
+    clearBtn.hidden = searchEl.value === '';
+  };
+  // Gap 28 (v1.12.0) — debounce the filter pass to 120 ms so fast typers
+  // don't trigger one full re-render per keystroke. The clear-× visibility
+  // refresh stays immediate (it's a single classList toggle) so the chrome
+  // feels live even while the heavier category re-render is queued.
+  // 120 ms picked over 150 to stay below the ~150 ms "feels instant"
+  // threshold while still coalescing typical typing bursts.
+  let filterTimer = null;
+  searchEl.addEventListener('input', () => {
     refreshClearVisibility();
-    filterComponents('');
+    clearTimeout(filterTimer);
+    filterTimer = setTimeout(() => {
+      filterStencil(searchEl.value.trim().toLowerCase());
+    }, 120);
   });
+  clearBtn?.addEventListener('click', () => {
+    searchEl.value = '';
+    clearTimeout(filterTimer);
+    filterStencil('');
+    refreshClearVisibility();
+    searchEl.focus();
+  });
+  refreshClearVisibility();
 
-  searchEl.addEventListener('input', (e) => filterComponents(e.target.value));
+  setupDropZone();
+  setupTouchDrag();
 
-  initDragFromStencil();
+  const closeBtn = document.getElementById('btn-close-stencil');
+  if (closeBtn) closeBtn.addEventListener('click', () => hide());
+}
+
+export function isHidden() {
+  return panelEl.classList.contains('df-stencil--hidden');
+}
+
+export function show() {
+  panelEl.classList.remove('df-stencil--hidden');
+  const btn = document.getElementById('btn-toggle-stencil');
+  if (btn) btn.classList.add('df-toolbar__button--active');
+}
+
+export function hide() {
+  panelEl.classList.add('df-stencil--hidden');
+  const btn = document.getElementById('btn-toggle-stencil');
+  if (btn) btn.classList.remove('df-toolbar__button--active');
 }
 
 export function setDiagramType(type) {
+  if (type === currentDiagramType) return;
   currentDiagramType = type;
   renderCategories();
-}
-
-// ---------------------------------------------------------------------------
-// Rendering
-// ---------------------------------------------------------------------------
-
-function getCategoriesForType(type) {
-  switch (type) {
-    case 'bpmn':        return BPMN_CATEGORIES;
-    case 'datamodel':   return DATAMODEL_CATEGORIES;
-    case 'datamapping': return DATAMAPPING_CATEGORIES;
-    case 'gantt':       return GANTT_CATEGORIES;
-    case 'org':         return ORG_CATEGORIES;
-    case 'sequence':    return SEQUENCE_CATEGORIES;
-    default:            return COMPONENT_CATEGORIES;
-  }
+  searchEl.value = '';
 }
 
 function renderCategories() {
   bodyEl.innerHTML = '';
 
-  // ── Icon sub-panel (architecture only) ──────────────────────────────────
+  // Custom templates — ONE count-aware accordion per diagram type that has saved
+  // templates, pinned ABOVE everything (Generic Shapes etc.). The active workspace's
+  // group sorts first and stays expanded; every other type's group is auto-collapsed.
+  // Types with zero templates render nothing (no dead headers / empty dividers).
+  const allTemplates = getTemplates();
+  if (allTemplates.length > 0) {
+    // Active type first, then the remaining known types in DIAGRAM_TYPES order, then
+    // any legacy/imported type not in the registry (appended last).
+    const knownTypes = Object.keys(DIAGRAM_TYPES);
+    const knownSet = new Set(knownTypes);
+    const orderedKnown = [currentDiagramType, ...knownTypes.filter(t => t !== currentDiagramType)];
+    const unknownTypes = [...new Set(allTemplates.map(t => t.diagramType).filter(t => !knownSet.has(t)))];
+    for (const type of [...orderedKnown, ...unknownTypes]) {
+      const group = allTemplates.filter(t => t.diagramType === type);
+      if (group.length === 0) continue;                         // hide empty types
+      const short = DIAGRAM_TYPES[type]?.short || type || 'Untyped';
+      const collapsed = type !== currentDiagramType;            // expand only the active type's group
+      bodyEl.appendChild(buildTemplatesSection(`My ${short} Templates`, `my-templates-${type || 'untyped'}`, group, collapsed));
+    }
+  }
+
+  const rawCategories = currentDiagramType === 'process' ? BPMN_CATEGORIES
+                      : currentDiagramType === 'datamapping' ? DATAMAPPING_CATEGORIES
+                      : currentDiagramType === 'datamodel' ? DATAMODEL_CATEGORIES
+                      : currentDiagramType === 'gantt' ? GANTT_CATEGORIES
+                      : currentDiagramType === 'org' ? ORG_CATEGORIES
+                      : currentDiagramType === 'sequence' ? SEQUENCE_CATEGORIES
+                      : COMPONENT_CATEGORIES;
+
+  // Pin "Generic Shapes" to the top across every diagram type. For diagram
+  // types where it sat at the bottom (process / gantt / org / sequence) — i.e.
+  // shapes specific to that diagram type matter more than the generic
+  // fallback — present the group collapsed by default. Architecture and
+  // datamodel already lead with Generic Shapes, so leave them expanded.
+  const TYPES_GENERIC_AT_BOTTOM = new Set(['process', 'gantt', 'org', 'sequence']);
+  const isGeneric = (c) => /generic/i.test(c.id || '') || c.label === 'Generic Shapes';
+  const generic = rawCategories.find(isGeneric);
+  const others = rawCategories.filter(c => !isGeneric(c));
+  const categories = generic
+    ? [
+        // Shallow-clone so we never mutate the exported source array — the
+        // `collapsed` flag must be per-render, not stick across re-renders
+        // initiated from a different diagram type later.
+        { ...generic, collapsed: TYPES_GENERIC_AT_BOTTOM.has(currentDiagramType) },
+        ...others,
+      ]
+    : rawCategories;
+
+  for (const category of categories) {
+    bodyEl.appendChild(buildComponentSection(category));
+  }
+
+  // SLDS icon categories only for architecture diagrams
   if (currentDiagramType === 'architecture') {
-    const iconSection = buildIconSection();
-    if (iconSection) bodyEl.appendChild(iconSection);
+    const cats = getCategories();
+    // Show 'diagrams' (Custom) category first, then SLDS sprite categories
+    const ordered = [...cats.filter(c => c === 'diagrams'), ...cats.filter(c => c !== 'diagrams')];
+    for (const cat of ordered) {
+      const icons = getAllIcons().filter(i => i.category === cat);
+      if (icons.length === 0) continue;
+      const displayLabel = cat === 'diagrams' ? 'Custom' : `SLDS: ${cat}`;
+      bodyEl.appendChild(buildIconSection(cat, icons, displayLabel));
+    }
   }
-
-  // ── Shape categories ────────────────────────────────────────────────────
-  const cats = getCategoriesForType(currentDiagramType);
-  cats.forEach(cat => {
-    const section = buildCategorySection(cat.name, cat.components);
-    bodyEl.appendChild(section);
-  });
-
-  // ── Saved user templates ─────────────────────────────────────────────────
-  renderTemplateCategories();
 }
 
-function buildCategorySection(name, components) {
-  const section  = document.createElement('div');
-  section.className = 'stencil-category';
-
-  const header = document.createElement('div');
-  header.className = 'stencil-category-header';
-
-  const title = document.createElement('span');
-  title.textContent = name;
-
-  const arrow = document.createElement('span');
-  arrow.className = 'stencil-arrow';
-  arrow.textContent = '▾';
-
-  header.appendChild(title);
-  header.appendChild(arrow);
-
-  const grid = document.createElement('div');
-  grid.className = 'stencil-grid';
-
-  components.forEach(comp => {
-    const item = buildStencilItem(comp);
-    grid.appendChild(item);
-  });
-
-  section.appendChild(header);
-  section.appendChild(grid);
-
-  // collapse / expand
-  header.addEventListener('click', () => {
-    const collapsed = section.classList.toggle('collapsed');
-    arrow.textContent = collapsed ? '▸' : '▾';
-  });
-
-  return section;
-}
-
-function buildStencilItem(comp) {
-  const item = document.createElement('div');
-  item.className = 'stencil-item';
-  item.dataset.compId = comp.id;
-  item.draggable = true;
-
-  const preview = document.createElement('div');
-  preview.className = 'stencil-preview';
-
-  // Build a minimal SVG preview from the component definition
-  const svg = renderComponentPreview(comp);
-  preview.appendChild(svg);
-
-  const label = document.createElement('div');
-  label.className = 'stencil-label';
-  label.textContent = comp.label;
-
-  item.appendChild(preview);
-  item.appendChild(label);
-  return item;
-}
-
-// ---------------------------------------------------------------------------
-// Icon section (architecture diagrams)
-// ---------------------------------------------------------------------------
-
-function buildIconSection() {
-  const iconCats = getCategories();
-  if (!iconCats || iconCats.length === 0) return null;
-
+function buildComponentSection(category) {
   const section = document.createElement('div');
-  section.className = 'stencil-category stencil-icons-section';
+  section.className = 'df-stencil__category' + (category.collapsed ? ' df-stencil__category--collapsed' : '');
+  section.dataset.categoryId = category.id;
 
-  const header = document.createElement('div');
-  header.className = 'stencil-category-header';
-
-  const title = document.createElement('span');
-  title.textContent = 'Icons';
-
-  const arrow = document.createElement('span');
-  arrow.className = 'stencil-arrow';
-  arrow.textContent = '▾';
-
-  header.appendChild(title);
-  header.appendChild(arrow);
-
-  const body = document.createElement('div');
-  body.className = 'stencil-icons-body';
-
-  // Sub-categories for icons
-  iconCats.forEach(cat => {
-    const subSection = document.createElement('div');
-    subSection.className = 'stencil-icon-cat';
-
-    const subHeader = document.createElement('div');
-    subHeader.className = 'stencil-icon-cat-header';
-    subHeader.textContent = cat.name;
-
-    const subGrid = document.createElement('div');
-    subGrid.className = 'stencil-icon-grid';
-
-    const icons = getAllIcons(cat.id);
-    icons.forEach(icon => {
-      const iconEl = document.createElement('div');
-      iconEl.className = 'stencil-icon-item';
-      iconEl.dataset.iconId = icon.id;
-      iconEl.draggable = true;
-      iconEl.title = icon.label;
-      iconEl.innerHTML = icon.svg;
-      subGrid.appendChild(iconEl);
-    });
-
-    subSection.appendChild(subHeader);
-    subSection.appendChild(subGrid);
-    body.appendChild(subSection);
+  const header = buildCategoryHeader(category.label, category.components.length);
+  header.addEventListener('click', () => {
+    section.classList.toggle('df-stencil__category--collapsed');
   });
+
+  const items = document.createElement('div');
+  items.className = 'df-stencil__items';
+
+  for (const template of category.components) {
+    items.appendChild(buildComponentItem(template));
+  }
 
   section.appendChild(header);
-  section.appendChild(body);
-
-  header.addEventListener('click', () => {
-    const collapsed = section.classList.toggle('collapsed');
-    arrow.textContent = collapsed ? '▸' : '▾';
-  });
-
+  section.appendChild(items);
   return section;
 }
 
-// ---------------------------------------------------------------------------
-// Saved templates section
-// ---------------------------------------------------------------------------
-
-function renderTemplateCategories() {
-  const all = getTemplates();
-  if (!all || all.length === 0) return;
-
-  // Group by diagramType, then collect any whose type doesn't match as 'other'
-  const matching = all.filter(t => t.diagramType === currentDiagramType);
-  const others   = all.filter(t => t.diagramType !== currentDiagramType);
-
-  if (matching.length > 0) {
-    const label = DIAGRAM_TYPES[currentDiagramType] || currentDiagramType;
-    const section = buildTemplateSection(`My ${label} Templates`, matching);
-    bodyEl.appendChild(section);
-  }
-
-  if (others.length > 0) {
-    const section = buildTemplateSection('My Other Templates', others);
-    bodyEl.appendChild(section);
-  }
-}
-
-function buildTemplateSection(title, templates) {
+// ── Custom templates (user-saved; "template" is the internal name) ──
+// One reusable section builder, called once per diagram type that has templates —
+// "My {Type} Templates". Header label, categoryId, and initial collapsed state vary
+// (the active workspace's group is expanded, the rest collapsed); everything else
+// (thumbnail snapshot, drag/drop, hover-× delete via buildTemplateItem) is identical.
+function buildTemplatesSection(label, categoryId, templates, collapsed = false) {
   const section = document.createElement('div');
-  section.className = 'stencil-category stencil-template-section';
+  section.className = 'df-stencil__category' + (collapsed ? ' df-stencil__category--collapsed' : '');
+  section.dataset.categoryId = categoryId;
 
-  const header = document.createElement('div');
-  header.className = 'stencil-category-header';
-
-  const titleEl = document.createElement('span');
-  titleEl.textContent = title;
-
-  const arrow = document.createElement('span');
-  arrow.className = 'stencil-arrow';
-  arrow.textContent = '▾';
-
-  header.appendChild(titleEl);
-  header.appendChild(arrow);
-
-  const grid = document.createElement('div');
-  grid.className = 'stencil-grid stencil-template-grid';
-
-  templates.forEach(tpl => {
-    const item = buildTemplateItem(tpl);
-    grid.appendChild(item);
+  const header = buildCategoryHeader(label, templates.length);
+  header.addEventListener('click', () => {
+    section.classList.toggle('df-stencil__category--collapsed');
   });
+
+  const items = document.createElement('div');
+  items.className = 'df-stencil__items df-stencil__items--templates';
+
+  for (const template of templates) {
+    items.appendChild(buildTemplateItem(template));
+  }
 
   section.appendChild(header);
-  section.appendChild(grid);
-
-  header.addEventListener('click', () => {
-    const collapsed = section.classList.toggle('collapsed');
-    arrow.textContent = collapsed ? '▸' : '▾';
-  });
-
+  section.appendChild(items);
   return section;
 }
 
-function buildTemplateItem(tpl) {
+function buildTemplateItem(template) {
   const item = document.createElement('div');
-  item.className = 'stencil-item stencil-template-item';
-  item.dataset.templateId = tpl.id;
+  item.className = 'df-stencil__item df-stencil__item--template';
   item.draggable = true;
+  item.dataset.label = (template.name || '').toLowerCase();
+  item.title = template.name || 'Template';
 
-  const thumb = document.createElement('div');
-  thumb.className = 'stencil-preview stencil-template-thumb';
-  renderTemplateThumbnail(tpl, thumb);
+  // Static SVG thumbnail (rendered from a throwaway mini-paper).
+  item.appendChild(renderTemplateThumbnail(template));
 
-  const label = document.createElement('div');
-  label.className = 'stencil-label';
-  label.textContent = tpl.name;
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'df-stencil__item-label';
+  labelSpan.textContent = template.name || 'Template';
+  item.appendChild(labelSpan);
 
-  // Delete button
+  // Per-template delete (×) — appears on hover/focus.
   const del = document.createElement('button');
-  del.className = 'stencil-template-delete';
-  del.title = 'Delete template';
-  del.textContent = '×';
+  del.type = 'button';
+  del.className = 'df-template-delete';
+  del.title = `Delete "${template.name}"`;
+  del.setAttribute('aria-label', `Delete template "${template.name}"`);
+  del.innerHTML = `<svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 1l8 8M9 1l-8 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>`;
+  // Stop the parent's drag from starting when the user grabs the × button.
+  del.addEventListener('mousedown', (e) => e.stopPropagation());
   del.addEventListener('click', async (e) => {
     e.stopPropagation();
-    const ok = await confirmModal(`Delete template "${tpl.name}"?`);
-    if (ok) deleteTemplate(tpl.id);
+    const ok = await confirmModal({
+      title: 'Delete template?',
+      message: `Remove "${template.name}" from My Templates? This can't be undone.`,
+      okLabel: 'Delete',
+      tone: 'danger',
+    });
+    if (ok) deleteTemplate(template.id);
+  });
+  item.appendChild(del);
+
+  item._sfTemplateId = template.id;
+  item._sfTemplateName = template.name;
+
+  item.addEventListener('dragstart', (evt) => {
+    evt.dataTransfer.setData('application/sf-diagrams-template', JSON.stringify({ id: template.id }));
+    evt.dataTransfer.effectAllowed = 'copy';
   });
 
-  item.appendChild(thumb);
-  item.appendChild(label);
-  item.appendChild(del);
+  item.addEventListener('dblclick', () => {
+    instantiateTemplate(template.id, getCanvasCenterLocalPoint());
+  });
+
   return item;
 }
 
-// ---------------------------------------------------------------------------
-// Search / filter
-// ---------------------------------------------------------------------------
+function buildIconSection(cat, icons, displayLabel) {
+  const section = document.createElement('div');
+  section.className = 'df-stencil__category df-stencil__category--collapsed';
+  section.dataset.categoryId = `slds-${cat}`;
 
-function filterComponents(query) {
-  const q = query.trim().toLowerCase();
-  const items = bodyEl.querySelectorAll('.stencil-item');
+  const header = buildCategoryHeader(displayLabel || `SLDS: ${cat}`, icons.length);
+  header.addEventListener('click', () => {
+    section.classList.toggle('df-stencil__category--collapsed');
+  });
 
-  if (!q) {
-    items.forEach(el => (el.style.display = ''));
-    bodyEl.querySelectorAll('.stencil-category').forEach(s => (s.style.display = ''));
+  const grid = document.createElement('div');
+  grid.className = 'df-stencil__items df-stencil__items--grid';
+
+  for (const icon of icons) {
+    const item = document.createElement('div');
+    item.className = 'df-stencil__item df-stencil__item--icon';
+    item.title = icon.name;
+    item.dataset.iconId = icon.id;
+    item.draggable = true;
+    const safeId = icon.id.replace(/[^a-zA-Z0-9_-]/g, '');
+    item.innerHTML = `<svg class="df-stencil__icon-preview"><use href="#${safeId}"></use></svg>`;
+
+    const iconTpl = {
+      type: 'sf.SimpleNode',
+      label: icon.name.replace(/_/g, ' '),
+      iconName: icon.id,
+    };
+    item._sfComponent = iconTpl;
+
+    item.addEventListener('dragstart', (evt) => {
+      evt.dataTransfer.setData('application/sf-diagrams', JSON.stringify(iconTpl));
+      evt.dataTransfer.effectAllowed = 'copy';
+      setDragPreview(evt, iconTpl);
+    });
+
+    grid.appendChild(item);
+  }
+
+  section.appendChild(header);
+  section.appendChild(grid);
+  return section;
+}
+
+function buildCategoryHeader(label, count) {
+  const header = document.createElement('div');
+  header.className = 'df-stencil__category-header';
+  // Chevron + label on the left, count on the right. The chevron sits inside
+  // a wrapper so CSS can rotate it based on the parent category's collapsed
+  // class (`.df-stencil__category--collapsed`).
+  const left = document.createElement('span');
+  left.className = 'df-stencil__category-label';
+  left.innerHTML = `
+    <svg class="df-stencil__category-chevron" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
+      <path d="M2 4l3 3 3-3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+    </svg>
+    <span>${escapeHtml(label)}</span>`;
+  const countSpan = document.createElement('span');
+  countSpan.className = 'df-stencil__category-count';
+  countSpan.textContent = count;
+  header.appendChild(left);
+  header.appendChild(countSpan);
+  return header;
+}
+
+// Local HTML escape — kept inline so the stencil module has no
+// cross-module dependency on persistence.js just for one helper.
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function buildComponentItem(template) {
+  const item = document.createElement('div');
+  item.className = 'df-stencil__item';
+  item.draggable = true;
+  item.dataset.label = template.label?.toLowerCase() || '';
+
+  // stencilSvg takes priority — allows custom logos even when iconName is set for the dropped element
+  const safeIconName = (template.iconName || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  const iconHtml = template.stencilSvg
+    ? `<svg class="df-stencil__item-icon df-stencil__item-icon--svg" viewBox="0 0 20 20">${template.stencilSvg}</svg>`
+    : safeIconName
+    ? `<svg class="df-stencil__item-icon"><use href="#${safeIconName}"></use></svg>`
+    : `<div class="df-stencil__item-icon df-stencil__item-icon--placeholder"></div>`;
+
+  item.innerHTML = iconHtml;
+  const labelSpan = document.createElement('span');
+  labelSpan.className = 'df-stencil__item-label';
+  labelSpan.textContent = template.label || '';
+  item.appendChild(labelSpan);
+
+  item._sfComponent = template;
+
+  item.addEventListener('dragstart', (evt) => {
+    evt.dataTransfer.setData('application/sf-diagrams', JSON.stringify(template));
+    evt.dataTransfer.effectAllowed = 'copy';
+    setDragPreview(evt, template);
+    beginDropGhost(template);
+  });
+  item.addEventListener('dragend', endDropGhost);
+
+  item.addEventListener('dblclick', () => {
+    addToCenter(template);
+  });
+
+  return item;
+}
+
+// ── Drop ghost (v1.14.1) — desktop stencil drag ────────────────────
+// HTML5 dragover can't read dataTransfer VALUES (only types), so probe the
+// template once on dragstart for its size + type, then preview the would-be
+// container with the shared showDropGhost during dragover. Cleared on
+// dragleave / drop / dragend. (Touch drag keeps its own ghost element.)
+let _ghostDragSize = null;
+let _ghostDragType = null;
+function beginDropGhost(template) {
+  _ghostDragSize = null;
+  _ghostDragType = null;
+  if (!template || template.customDrop) return; // image / custom drop — no ghost
+  try {
+    const probe = createElementFromComponent(template, { x: 0, y: 0 });
+    if (probe) { _ghostDragSize = probe.size(); _ghostDragType = probe.get('type'); }
+  } catch { /* probe failed — just skip the ghost */ }
+}
+function endDropGhost() {
+  _ghostDragSize = null;
+  _ghostDragType = null;
+  hideDropGhost();
+}
+function refreshDropGhost(clientX, clientY) {
+  if (!_ghostDragSize || !_ghostDragType) { hideDropGhost(); return; }
+  const pt = paper.clientToLocalPoint(clientX, clientY);
+  const w = _ghostDragSize.width;
+  const h = _ghostDragSize.height;
+  // The drop centres the element on the cursor, so preview the same bbox.
+  showDropGhost({ x: pt.x - w / 2, y: pt.y - h / 2, width: w, height: h }, _ghostDragType, null);
+}
+
+function setupDropZone() {
+  const canvasEl = document.getElementById('canvas-container');
+
+  // Gap 8 (v1.12.0) — during a stencil dragover, highlight the topmost
+  // container-like cell beneath the cursor with the amber drop-target outline.
+  // Uses its OWN class (`df-drop-target`, styled in canvas.css), NOT the link-drag
+  // `.available-cell` — that one is port-only now (its body outline was removed
+  // because the body is never a connection target). Resets on dragleave/drop. The
+  // dragged template's TYPE isn't available from dragover events (only the MIME type
+  // is), so we walk the cursor-point candidates and highlight the topmost cell that
+  // COULD host a child via `canEmbed`.
+  let _highlightedView = null;
+  const clearDropHighlight = () => {
+    if (_highlightedView?.el) _highlightedView.el.classList.remove('df-drop-target');
+    _highlightedView = null;
+  };
+  const refreshDropHighlight = (clientX, clientY) => {
+    const pt = paper.clientToLocalPoint(clientX, clientY);
+    const candidates = graph.findModelsFromPoint(pt)
+      .sort((a, b) => (b.get('z') || 0) - (a.get('z') || 0));
+    let next = null;
+    for (const cell of candidates) {
+      const t = cell.get('type');
+      // Match any type that accepts SOME child — cheap proxy for "container-like".
+      // Walking is short (< 10 cells in practice) so the per-frame cost is fine.
+      // v1.14.1: the free-form groupers (Container/Zone/BPMN) now show the dashed
+      // drop-ghost instead, so only solid-highlight the STRUCTURED parents here
+      // (positional embedding, no ghost) — otherwise ghost + solid would double up.
+      const acceptsAnyChild = ['sf.GanttTimeline',
+        'sf.SequenceParticipant','sf.SequenceActor','sf.Task'].includes(t)
+        && canEmbed(t, 'sf.SimpleNode'); // cheap "does it accept anything?" probe
+      if (acceptsAnyChild) { next = paper.findViewByModel(cell); break; }
+    }
+    if (next === _highlightedView) return;
+    clearDropHighlight();
+    if (next?.el) {
+      next.el.classList.add('df-drop-target');
+      _highlightedView = next;
+    }
+  };
+
+  canvasEl.addEventListener('dragover', (evt) => {
+    evt.preventDefault();
+    evt.dataTransfer.dropEffect = 'copy';
+    refreshDropHighlight(evt.clientX, evt.clientY);
+    refreshDropGhost(evt.clientX, evt.clientY);
+  });
+  canvasEl.addEventListener('dragleave', (evt) => {
+    // Only clear when the cursor actually leaves the canvas — dragleave
+    // fires on every child boundary crossing too.
+    if (evt.target === canvasEl) { clearDropHighlight(); hideDropGhost(); }
+  });
+
+  canvasEl.addEventListener('drop', (evt) => {
+    evt.preventDefault();
+    clearDropHighlight();
+    endDropGhost();
+
+    // Custom template drop — instantiate with fresh cell IDs at the drop point.
+    const templateData = evt.dataTransfer.getData('application/sf-diagrams-template');
+    if (templateData) {
+      let info;
+      try { info = JSON.parse(templateData); } catch { return; }
+      const localPoint = paper.clientToLocalPoint(evt.clientX, evt.clientY);
+      instantiateTemplate(info.id, localPoint);
+      return;
+    }
+
+    const data = evt.dataTransfer.getData('application/sf-diagrams');
+    if (!data) return;
+
+    let template;
+    try {
+      template = JSON.parse(data);
+    } catch {
+      return;
+    }
+
+    // Convert raw client coordinates to paper-local coordinates
+    // clientToLocalPoint handles the paper offset internally — pass raw clientX/Y
+    const localPoint = paper.clientToLocalPoint(evt.clientX, evt.clientY);
+
+    // Image drops route through a callback flow that keeps the chain to
+    // `input.click()` synchronous from this drop event — Safari rejects the
+    // file picker otherwise. See js/image-component.js header comment.
+    if (template.customDrop === 'image') {
+      startImageAddFlow(graph, (result) => addImageCellAt(result, localPoint));
+      return;
+    }
+
+    try {
+      const gridSize = paper.options.gridSize || 4;
+
+      // Create element at origin first, then center on drop point
+      const element = createElementFromComponent(template, { x: 0, y: 0 });
+      if (element) {
+        applyDisplayFlags(element);
+        const size = element.size();
+        const cx = localPoint.x - size.width / 2;
+        const cy = localPoint.y - size.height / 2;
+        element.position(
+          Math.round(cx / gridSize) * gridSize,
+          Math.round(cy / gridSize) * gridSize,
+        );
+        graph.addCell(element);
+        updateSimpleNodeLayout(element);
+        tryEmbed(element);
+        // Capture: drop-on-lifeline snaps activation's X to the lifeline centre.
+        if (element.get('type') === 'sf.SequenceActivation') {
+          snapActivationToLifeline(element);
+        }
+      }
+    } catch (err) {
+      console.warn('SF Diagrams: Drop failed:', err);
+    }
+  });
+}
+
+/**
+ * Place a processed image at the given local point. Caps the on-canvas
+ * footprint so a 1280-wide source doesn't blow out the viewport — the user
+ * can resize via the corner handles afterward.
+ */
+function addImageCellAt(result, localPoint) {
+  if (!result) return;
+  const { dataURI, width, height } = result;
+  const MAX_DISPLAY = 320;
+  let dispW = width, dispH = height;
+  if (dispW > MAX_DISPLAY || dispH > MAX_DISPLAY) {
+    const ratio = Math.min(MAX_DISPLAY / dispW, MAX_DISPLAY / dispH);
+    dispW = Math.round(dispW * ratio);
+    dispH = Math.round(dispH * ratio);
+  }
+  const gridSize = paper.options.gridSize || 4;
+  const cx = Math.round((localPoint.x - dispW / 2) / gridSize) * gridSize;
+  const cy = Math.round((localPoint.y - dispH / 2) / gridSize) * gridSize;
+
+  const element = new joint.shapes.sf.Image({
+    position: { x: cx, y: cy },
+    size: { width: dispW, height: dispH },
+    attrs: { image: { href: dataURI } },
+  });
+  graph.addCell(element);
+  tryEmbed(element);
+}
+
+/** Paper-local point at the visible centre of the canvas, accounting for
+ *  panels that overlap the canvas from the bottom on mobile. Shared by the
+ *  template + template double-click "add to centre" flows. */
+function getCanvasCenterLocalPoint() {
+  const canvasEl = document.getElementById('canvas-container');
+  const rect = canvasEl.getBoundingClientRect();
+  let visibleTop = rect.top;
+  let visibleBottom = rect.bottom;
+
+  // On mobile, fixed-positioned panels overlap the canvas from the bottom
+  const isMobile = window.innerWidth <= 768;
+  if (isMobile) {
+    const stencilEl = document.querySelector('.df-stencil:not(.df-stencil--hidden)');
+    const propsEl = document.querySelector('.df-properties:not(.df-properties--hidden)');
+    // Use the highest panel top edge as the effective bottom of visible canvas
+    if (stencilEl) {
+      const sr = stencilEl.getBoundingClientRect();
+      if (sr.top < visibleBottom) visibleBottom = sr.top;
+    }
+    if (propsEl) {
+      const pr = propsEl.getBoundingClientRect();
+      if (pr.top < visibleBottom) visibleBottom = pr.top;
+    }
+  }
+
+  const centerClient = { x: rect.left + rect.width / 2, y: visibleTop + (visibleBottom - visibleTop) / 2 };
+  return paper.clientToLocalPoint(centerClient.x, centerClient.y);
+}
+
+function addToCenter(template) {
+  const localCenter = getCanvasCenterLocalPoint();
+  const gridSize = paper.options.gridSize || 4;
+
+  // Dblclick on the Image stencil — same callback flow as drag-drop so the
+  // picker click stays in the user-gesture chain (Safari requirement).
+  if (template.customDrop === 'image') {
+    startImageAddFlow(graph, (result) => addImageCellAt(result, localCenter));
     return;
   }
 
-  bodyEl.querySelectorAll('.stencil-category').forEach(section => {
-    const sectionItems = section.querySelectorAll('.stencil-item');
-    let anyVisible = false;
+  const element = createElementFromComponent(template, { x: 0, y: 0 });
+  if (!element) return;
+  applyDisplayFlags(element);
 
-    sectionItems.forEach(el => {
-      const labelText = el.querySelector('.stencil-label')?.textContent.toLowerCase() || '';
-      const iconTitle  = el.title?.toLowerCase() || '';
-      const visible = labelText.includes(q) || iconTitle.includes(q);
-      el.style.display = visible ? '' : 'none';
-      if (visible) anyVisible = true;
+  const size = element.size();
+  let cx = localCenter.x - size.width / 2;
+  let cy = localCenter.y - size.height / 2;
+  cx = Math.round(cx / gridSize) * gridSize;
+  cy = Math.round(cy / gridSize) * gridSize;
+
+  // Offset if there's already an element at the same position
+  const OFFSET = 20;
+  let attempts = 0;
+  while (attempts < 20) {
+    const occupied = graph.getElements().some(el => {
+      const p = el.position();
+      return Math.abs(p.x - cx) < 4 && Math.abs(p.y - cy) < 4;
     });
-
-    section.style.display = anyVisible ? '' : 'none';
-    if (anyVisible) {
-      // Expand section so matches are visible
-      section.classList.remove('collapsed');
-      const arrow = section.querySelector('.stencil-arrow');
-      if (arrow) arrow.textContent = '▾';
-    }
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Minimal SVG preview renderer
-// ---------------------------------------------------------------------------
-
-function renderComponentPreview(comp) {
-  const W = 56, H = 40;
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.setAttribute('width', W);
-  svg.setAttribute('height', H);
-
-  const shape = comp.defaultAttrs?.shape || comp.type || 'rectangle';
-  const fill  = '#e8f0fe';
-  const stroke = '#4a6fa5';
-  const sw = 1.5;
-
-  if (shape === 'circle' || shape === 'ellipse') {
-    const el = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
-    el.setAttribute('cx', W / 2); el.setAttribute('cy', H / 2);
-    el.setAttribute('rx', W / 2 - 3); el.setAttribute('ry', H / 2 - 3);
-    el.setAttribute('fill', fill); el.setAttribute('stroke', stroke); el.setAttribute('stroke-width', sw);
-    svg.appendChild(el);
-  } else if (shape === 'diamond' || shape === 'rhombus') {
-    const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-    poly.setAttribute('points', `${W/2},3 ${W-3},${H/2} ${W/2},${H-3} 3,${H/2}`);
-    poly.setAttribute('fill', fill); poly.setAttribute('stroke', stroke); poly.setAttribute('stroke-width', sw);
-    svg.appendChild(poly);
-  } else if (shape === 'cylinder') {
-    // simplified cylinder: rect + ellipse top
-    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    r.setAttribute('x', 8); r.setAttribute('y', 8); r.setAttribute('width', W - 16); r.setAttribute('height', H - 10);
-    r.setAttribute('fill', fill); r.setAttribute('stroke', stroke); r.setAttribute('stroke-width', sw);
-    svg.appendChild(r);
-    const e = document.createElementNS('http://www.w3.org/2000/svg', 'ellipse');
-    e.setAttribute('cx', W / 2); e.setAttribute('cy', 8);
-    e.setAttribute('rx', (W - 16) / 2); e.setAttribute('ry', 4);
-    e.setAttribute('fill', fill); e.setAttribute('stroke', stroke); e.setAttribute('stroke-width', sw);
-    svg.appendChild(e);
-  } else {
-    // default: rounded rectangle
-    const r = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-    r.setAttribute('x', 3); r.setAttribute('y', 3); r.setAttribute('width', W - 6); r.setAttribute('height', H - 6);
-    r.setAttribute('rx', 4); r.setAttribute('ry', 4);
-    r.setAttribute('fill', fill); r.setAttribute('stroke', stroke); r.setAttribute('stroke-width', sw);
-    svg.appendChild(r);
+    if (!occupied) break;
+    cx += OFFSET;
+    cy += OFFSET;
+    attempts++;
   }
 
-  return svg;
+  element.position(cx, cy);
+  graph.addCell(element);
+  updateSimpleNodeLayout(element);
 }
 
-// ---------------------------------------------------------------------------
-// Drag-from-stencil
-// ---------------------------------------------------------------------------
+/** Create a styled HTML drag preview that resembles the target shape */
+function setDragPreview(evt, template) {
+  const type = template.type || 'sf.SimpleNode';
 
-function initDragFromStencil() {
-  bodyEl.addEventListener('dragstart', (e) => {
-    const item = e.target.closest('.stencil-item');
-    if (!item) return;
+  // Determine dimensions based on shape type
+  let w = 140, h = 48;
+  if (type === 'sf.Container') { w = 180; h = 100; }
+  else if (type === 'sf.Zone') { w = 180; h = 100; }
+  else if (type === 'sf.DataObject') { w = 180; h = 72; }
+  else if (type === 'sf.Note') { w = 120; h = 64; }
+  else if (type === 'sf.TextLabel') { w = 100; h = 24; }
+  else if (type === 'sf.Line') { w = 120; h = 8; }
+  else if (type.startsWith('sf.Bpmn') || type.startsWith('sf.Flow')) { w = 100; h = 48; }
+  else if (type.startsWith('sf.Gantt')) { w = 160; h = 28; }
+  else if (type === 'sf.OrgPerson') { w = 180; h = 72; }
 
-    if (item.dataset.templateId) {
-      e.dataTransfer.setData('text/plain', JSON.stringify({
-        type: 'template',
-        templateId: item.dataset.templateId,
-      }));
-    } else if (item.dataset.compId) {
-      e.dataTransfer.setData('text/plain', JSON.stringify({
-        type: 'component',
-        compId: item.dataset.compId,
-      }));
+  const ghost = document.createElement('div');
+  // Compute colors from CSS vars (fallback for drag image which can't use CSS vars)
+  const cs = getComputedStyle(document.documentElement);
+  const bgColor = cs.getPropertyValue('--node-bg').trim() || '#2A2D32';
+  const borderColor = cs.getPropertyValue('--node-border').trim() || '#444';
+  const textColor = cs.getPropertyValue('--text-secondary').trim() || '#999';
+
+  ghost.style.cssText = `
+    position:fixed;left:-9999px;top:-9999px;
+    width:${w}px;height:${h}px;
+    background:${bgColor};
+    border:1.5px solid ${borderColor};
+    border-radius:8px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:11px;color:${textColor};
+    font-family:system-ui,sans-serif;
+    box-shadow:0 4px 12px rgba(0,0,0,0.18);
+    pointer-events:none;
+  `;
+
+  // Style variations — sanitize template-derived colors before applying to style
+  const safeColor = (c) => /^#[0-9a-fA-F]{3,8}$/.test(c) ? c : '#1D73C9';
+  if (type === 'sf.Zone') ghost.style.borderStyle = 'dashed';
+  if (type === 'sf.Note') ghost.style.background = '#FFF9C4';
+  if (type === 'sf.DataObject') {
+    ghost.style.borderTop = `4px solid ${safeColor(template.headerColor)}`;
+    ghost.style.borderRadius = '6px';
+  }
+  if (type === 'sf.Container') {
+    ghost.style.borderTop = `4px solid ${safeColor(template.accentColor)}`;
+  }
+
+  ghost.textContent = template.label || 'Shape';
+  document.body.appendChild(ghost);
+  evt.dataTransfer.setDragImage(ghost, w / 2, h / 2);
+
+  // Clean up — browser captures the image synchronously after dragstart returns
+  requestAnimationFrame(() => ghost.remove());
+}
+
+/** After drop, try to embed the element into a container/zone at its position */
+function tryEmbed(element) {
+  // Suppress change:parent recording: a stencil drop's `add` command already captures
+  // the final embedded state (its JSON re-capture round-trips `parent`), so recording
+  // the embed as its own command would split one drop into two undo steps.
+  history.suppressEmbedTracking(() => {
+    const bbox = element.getBBox();
+    const childType = element.get('type');
+    // 1) Exact overlap — topmost valid parent. canEmbed is the single source of
+    //    truth for the type rules, keeping this in lockstep with the canvas-drag
+    //    path and covering every parent type (incl. BpmnLoop, which the old inline
+    //    list missed).
+    const overlap = graph.findModelsInArea(bbox)
+      .filter(el => el.id !== element.id)
+      .sort((a, b) => (b.get('z') || 0) - (a.get('z') || 0));
+    for (const candidate of overlap) {
+      if (canEmbed(candidate.get('type'), childType)) {
+        candidate.embed(element);
+        return;
+      }
     }
-
-    const iconItem = e.target.closest('.stencil-icon-item');
-    if (iconItem) {
-      e.dataTransfer.setData('text/plain', JSON.stringify({
-        type: 'icon',
-        iconId: iconItem.dataset.iconId,
-      }));
+    // 2) No overlap — the capture halo lets a drop just OUTSIDE a container-like
+    //    parent (especially just below it) still embed. Tuck the element inside
+    //    first so the on-drop auto-fit grows the parent cleanly around it.
+    const halo = findHaloParent(bbox, childType, element.id);
+    if (halo) {
+      tuckChildInside(element, halo);
+      halo.embed(element);
     }
   });
+}
 
-  // Touch-drag support (mobile / tablet)
-  let touchDragPayload = null;
-  let touchGhost = null;
+/** Copy display flags (showLabels, showFieldLengths, keyFieldsOnly) from existing DataObjects to a new one */
+function applyDisplayFlags(element) {
+  if (element.get('type') !== 'sf.DataObject') return;
+  const existing = graph.getElements().find(el => el.get('type') === 'sf.DataObject');
+  if (!existing) return;
+  const showLabels = existing.get('showLabels');
+  const showFieldLengths = existing.get('showFieldLengths');
+  const keyFieldsOnly = existing.get('keyFieldsOnly');
+  if (showLabels != null) element.set('showLabels', showLabels);
+  if (showFieldLengths != null) element.set('showFieldLengths', showFieldLengths);
+  if (keyFieldsOnly != null) element.set('keyFieldsOnly', keyFieldsOnly);
+}
 
-  bodyEl.addEventListener('touchstart', (e) => {
-    const item = e.target.closest('.stencil-item, .stencil-icon-item');
-    if (!item) return;
+function filterStencil(query) {
+  const sections = bodyEl.querySelectorAll('.df-stencil__category');
 
-    if (item.dataset.templateId) {
-      touchDragPayload = { type: 'template', templateId: item.dataset.templateId };
-    } else if (item.dataset.compId) {
-      touchDragPayload = { type: 'component', compId: item.dataset.compId };
-    } else if (item.dataset.iconId) {
-      touchDragPayload = { type: 'icon', iconId: item.dataset.iconId };
+  sections.forEach(section => {
+    const items = section.querySelectorAll('.df-stencil__item');
+    let visibleCount = 0;
+
+    items.forEach(item => {
+      const label = (item.querySelector('.df-stencil__item-label')?.textContent || item.title || '').toLowerCase();
+      const matches = !query || label.includes(query);
+      item.style.display = matches ? '' : 'none';
+      if (matches) visibleCount++;
+    });
+
+    section.style.display = visibleCount > 0 || !query ? '' : 'none';
+
+    // Auto-expand matching categories
+    if (query && visibleCount > 0) {
+      section.classList.remove('df-stencil__category--collapsed');
     }
+  });
+}
 
-    // Create ghost
-    touchGhost = item.cloneNode(true);
-    touchGhost.style.cssText = 'position:fixed;opacity:0.7;pointer-events:none;z-index:9999;';
-    document.body.appendChild(touchGhost);
-  }, { passive: true });
+export function toggle() {
+  if (isHidden()) show();
+  else hide();
+}
 
-  bodyEl.addEventListener('touchmove', (e) => {
-    if (!touchGhost) return;
-    const t = e.touches[0];
-    touchGhost.style.left = `${t.clientX - 28}px`;
-    touchGhost.style.top  = `${t.clientY - 20}px`;
-    showDropGhost(t.clientX, t.clientY);
-  }, { passive: true });
+// ── Touch long-press → drag (HTML5 DnD doesn't work on touch) ──────
+function setupTouchDrag() {
+  let pressTimer = null;
+  let activeItem = null;
+  let activeTemplate = null;
+  let activeTemplateId = null;
+  let activeLabel = null;
+  let ghost = null;
+  let startXY = null;
+  let dragging = false;
 
-  bodyEl.addEventListener('touchend', (e) => {
-    if (touchGhost) { touchGhost.remove(); touchGhost = null; }
-    hideDropGhost();
-    if (!touchDragPayload) return;
+  const LONG_PRESS_MS = 350;
+  const MOVE_CANCEL_PX = 10;
 
-    const t = e.changedTouches[0];
-    const payload = touchDragPayload;
-    touchDragPayload = null;
+  const getTemplateFor = (itemEl) => {
+    // Template items: rebuild from dataset/label — we only have label in dataset.
+    // Easier: attach JSON directly during build. Fallback: find by iconId for icon-mode items.
+    if (itemEl._sfComponent) return itemEl._sfComponent;
+    return null;
+  };
 
-    try {
-      const canvasEl = document.getElementById('canvas');
-      if (!canvasEl) return;
-      const rect = canvasEl.getBoundingClientRect();
-      if (t.clientX < rect.left || t.clientX > rect.right ||
-          t.clientY < rect.top  || t.clientY > rect.bottom) return;
+  const cancel = () => {
+    clearTimeout(pressTimer);
+    pressTimer = null;
+    if (ghost) { ghost.remove(); ghost = null; }
+    activeItem = null;
+    activeTemplate = null;
+    activeTemplateId = null;
+    activeLabel = null;
+    startXY = null;
+    dragging = false;
+  };
 
-      const x = t.clientX - rect.left;
-      const y = t.clientY - rect.top;
+  const startDrag = (clientX, clientY) => {
+    if (!activeTemplate && !activeTemplateId) return;
+    dragging = true;
+    if (navigator.vibrate) navigator.vibrate(15);
+    // Create simple ghost following finger
+    ghost = document.createElement('div');
+    ghost.className = 'df-touch-drag-ghost';
+    ghost.textContent = activeTemplate?.label || activeLabel || 'Shape';
+    ghost.style.left = clientX + 'px';
+    ghost.style.top = clientY + 'px';
+    document.body.appendChild(ghost);
+  };
 
-      if (payload.type === 'template') {
-        instantiateTemplate(payload.templateId, { x, y });
-      } else if (payload.type === 'component') {
-        const elem = createElementFromComponent(payload.compId, x, y);
-        if (elem) {
-          graph.addCell(elem);
-          const embedParent = findHaloParent(elem, graph);
-          if (embedParent && canEmbed(embedParent, elem)) {
-            tuckChildInside(embedParent, elem, graph);
+  const onMove = (e) => {
+    const t = e.touches?.[0];
+    if (!t) return;
+    if (!dragging && startXY) {
+      const dx = t.clientX - startXY.x;
+      const dy = t.clientY - startXY.y;
+      if (Math.hypot(dx, dy) > MOVE_CANCEL_PX && !pressTimer) {
+        // moved too far before long-press: abort
+      } else if (Math.hypot(dx, dy) > MOVE_CANCEL_PX) {
+        cancel();
+      }
+      return;
+    }
+    if (dragging && ghost) {
+      e.preventDefault();
+      ghost.style.left = t.clientX + 'px';
+      ghost.style.top = t.clientY + 'px';
+    }
+  };
+
+  const onEnd = (e) => {
+    if (dragging && (activeTemplate || activeTemplateId)) {
+      const t = e.changedTouches?.[0];
+      if (t) {
+        const el = document.elementFromPoint(t.clientX, t.clientY);
+        const canvasEl = document.getElementById('canvas-container');
+        if (el && canvasEl.contains(el)) {
+          if (activeTemplateId) {
+            instantiateTemplate(activeTemplateId, paper.clientToLocalPoint(t.clientX, t.clientY));
+          } else {
+            dropTemplateAtClient(activeTemplate, t.clientX, t.clientY);
           }
         }
-      } else if (payload.type === 'icon') {
-        startImageAddFlow({ iconId: payload.iconId, x, y });
       }
-    } catch (err) {
-      console.warn('SF Diagrams: Touch drop failed:', err);
     }
-  });
+    cancel();
+  };
+
+  panelEl.addEventListener('touchstart', (e) => {
+    if (window.innerWidth > 768) return;
+    const item = e.target.closest('.df-stencil__item');
+    if (!item) return;
+    const tpl = getTemplateFor(item);
+    const templateId = item._sfTemplateId || null;
+    if (!tpl && !templateId) return;
+    activeItem = item;
+    activeTemplate = tpl;
+    activeTemplateId = templateId;
+    activeLabel = item._sfTemplateName || null;
+    const t = e.touches[0];
+    startXY = { x: t.clientX, y: t.clientY };
+    pressTimer = setTimeout(() => {
+      pressTimer = null;
+      startDrag(t.clientX, t.clientY);
+    }, LONG_PRESS_MS);
+  }, { passive: true });
+
+  panelEl.addEventListener('touchmove', onMove, { passive: false });
+  panelEl.addEventListener('touchend', onEnd);
+  panelEl.addEventListener('touchcancel', cancel);
+  document.addEventListener('touchmove', onMove, { passive: false });
+  document.addEventListener('touchend', onEnd);
+}
+
+function dropTemplateAtClient(template, clientX, clientY) {
+  try {
+    const localPoint = paper.clientToLocalPoint(clientX, clientY);
+    if (template.customDrop === 'image') {
+      startImageAddFlow(graph, (result) => addImageCellAt(result, localPoint));
+      return;
+    }
+    const gridSize = paper.options.gridSize || 4;
+    const element = createElementFromComponent(template, { x: 0, y: 0 });
+    if (!element) return;
+    applyDisplayFlags(element);
+    const size = element.size();
+    const cx = localPoint.x - size.width / 2;
+    const cy = localPoint.y - size.height / 2;
+    element.position(
+      Math.round(cx / gridSize) * gridSize,
+      Math.round(cy / gridSize) * gridSize,
+    );
+    graph.addCell(element);
+    updateSimpleNodeLayout(element);
+    tryEmbed(element);
+    if (element.get('type') === 'sf.SequenceActivation') {
+      snapActivationToLifeline(element);
+    }
+  } catch (err) {
+    console.warn('SF Diagrams: Touch drop failed:', err);
+  }
 }
