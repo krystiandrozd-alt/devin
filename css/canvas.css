@@ -1,0 +1,119 @@
+/* cursor: default prevents text cursor over canvas */
+.df-canvas {
+  cursor: default;
+}
+
+.joint-paper {
+  background: transparent !important;
+}
+
+.joint-port {
+  opacity: 0;
+  transition: opacity var(--transition-fast);
+  pointer-events: none;
+}
+
+.joint-element:hover .joint-port,
+.joint-element.selected .joint-port {
+  opacity: 1;
+  pointer-events: all;
+}
+
+.joint-element.selected .body,
+.joint-element.selected rect.body {
+  stroke: var(--selection-color) !important;
+  stroke-width: 2 !important;
+}
+
+.joint-link [joint-selector="line"] {
+  transition: stroke var(--transition-fast);
+}
+
+.joint-link.df-link-dimmed {
+  opacity: 0.18 !important;
+  transition: opacity 180ms ease-out;
+}
+.joint-link.df-link-dimmed:hover,
+.joint-link.df-link-dimmed.selected {
+  opacity: 1 !important;
+}
+
+.joint-element.df-element-dimmed {
+  opacity: 0.4 !important;
+  transition: opacity 180ms ease-out;
+}
+
+.joint-link:hover [joint-selector="line"],
+.joint-link.selected [joint-selector="line"] {
+  stroke: var(--selection-color) !important;
+}
+
+.df-selection-rect {
+  position: absolute;
+  border: 1.5px dashed var(--selection-color);
+  background: rgba(53, 120, 229, 0.08);
+  pointer-events: none;
+  z-index: 1000;
+  border-radius: 3px;
+}
+
+[data-theme="dark"] .df-selection-rect {
+  background: rgba(218, 78, 85, 0.08);
+}
+
+.df-canvas-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  pointer-events: none;
+  color: var(--text-muted);
+  user-select: none;
+}
+#canvas-container.is-empty .df-canvas-empty { display: flex; }
+
+.df-canvas-empty__caption {
+  margin: 0;
+  font-family: var(--font-family);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-muted);
+  opacity: 0.6;
+  letter-spacing: 0.3px;
+}
+
+.df-table-view {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-canvas);
+  overflow: hidden;
+  z-index: 6;
+}
+
+.df-flow-overlay {
+  stroke: var(--bg-canvas) !important;
+  stroke-dasharray: 4 8;
+  animation: df-flow 0.6s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes df-flow {
+  from { stroke-dashoffset: 12; }
+  to   { stroke-dashoffset: 0; }
+}
+
+@media (max-width: 768px) {
+  .joint-port circle {
+    r: 10;
+    stroke-width: 2;
+  }
+
+  .joint-element.selected .joint-port {
+    opacity: 1;
+    pointer-events: all;
+  }
+}

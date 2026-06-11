@@ -1,0 +1,182 @@
+/* Modal overlay and dialog */
+
+.df-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.df-modal--hidden {
+  display: none;
+}
+
+.df-modal__overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+.df-modal__dialog {
+  position: relative;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md, 10px);
+  box-shadow: var(--shadow-md);
+  width: 480px;
+  max-width: calc(100vw - 32px);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.df-modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--border-color);
+  flex-shrink: 0;
+}
+
+.df-modal__title {
+  font-size: var(--font-size-md);
+  font-weight: 700;
+  color: var(--text-primary);
+  margin: 0;
+}
+
+.df-modal__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--spacing-sm) var(--spacing-lg);
+}
+
+.df-modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-md);
+  border-top: 1px solid var(--border-color);
+}
+
+.df-modal__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px var(--spacing-sm);
+  border-radius: var(--border-radius-sm);
+  font-size: var(--font-size-xs);
+  font-family: var(--font-family);
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--modal-btn-neutral-bg);
+  color: var(--modal-btn-neutral-fg);
+  border: 1px solid transparent;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  white-space: nowrap;
+}
+
+.df-modal__btn--primary {
+  background: var(--brand-blue);
+  color: #ffffff;
+  border-color: var(--brand-blue);
+}
+
+.df-modal__btn--primary:hover {
+  opacity: 0.88;
+}
+
+.df-modal__btn--danger {
+  background: var(--brand-red);
+  color: #ffffff;
+  border-color: var(--brand-red);
+}
+
+.df-toast-container {
+  position: fixed;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 24px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  z-index: 10100;
+  pointer-events: none;
+}
+
+.df-toast {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  border-radius: 8px;
+  background: var(--bg-surface-raised);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: 500;
+  font-family: var(--font-family);
+  max-width: min(560px, calc(100vw - 32px));
+  pointer-events: auto;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.18s ease-out, transform 0.18s ease-out;
+}
+
+.df-toast--shown {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.df-about {
+  width: 380px;
+  text-align: center;
+}
+
+.df-about__body {
+  padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-md) !important;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+@media (max-width: 768px) {
+  .df-modal__btn {
+    min-height: 44px;
+    padding: 10px 16px;
+    font-size: var(--font-size-md);
+  }
+}
+
+.df-tour { position: fixed; inset: 0; z-index: 5000; pointer-events: none; }
+.df-tour__spotlight {
+  position: fixed;
+  border-radius: var(--border-radius-md, 8px);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  outline: 2px solid var(--color-primary);
+  pointer-events: none;
+}
+.df-tour__card {
+  position: fixed;
+  width: 340px;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-md, 10px);
+  box-shadow: var(--shadow-lg);
+  padding: var(--spacing-md);
+  pointer-events: auto;
+}

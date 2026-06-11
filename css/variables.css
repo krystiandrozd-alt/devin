@@ -3,16 +3,14 @@
   --brand-blue: #1D73C9;
   --brand-red: #DA4E55;
   --brand-amber: #F6B355;
-  --brand-green: #27AE60;   /* Success / confirmation accent (e.g. "Copied!" feedback) */
+  --brand-green: #27AE60;
 
   /* Semantic colors (overridden per theme) */
   --color-primary: var(--brand-blue);
   --color-secondary: var(--brand-red);
   --color-accent: var(--brand-amber);
 
-  /* Neutral modal buttons (Cancel / Close) — light-grey fill, identical in
-     both themes (NOT overridden in theme.css) so the secondary action reads
-     consistently across every overlay. */
+  /* Neutral modal buttons */
   --modal-btn-neutral-bg: #E4E6EB;
   --modal-btn-neutral-bg-hover: #D2D6DC;
   --modal-btn-neutral-fg: #1C1E21;
@@ -64,9 +62,6 @@
   --spacing-lg: 16px;
   --spacing-xl: 24px;
 
-  /* Shared height of the panel header rows (right-sidebar search header + the
-     Data Mapping table topbar) so their bottom borders line up into one
-     continuous horizontal rule across the content area. */
   --panel-header-height: 45px;
 
   /* Typography */
@@ -83,11 +78,11 @@
   --shadow-md: 0 5px 40px rgba(0, 0, 0, 0.12);
   --shadow-lg: 0 12px 28px 0 rgba(0, 0, 0, 0.2), 0 2px 4px 0 rgba(0, 0, 0, 0.1);
 
-  /* Transitions — matching Docusaurus/Infima timing */
+  /* Transitions */
   --transition-fast: 150ms ease;
   --transition-normal: 400ms cubic-bezier(0.08, 0.52, 0.52, 1);
 
-  /* Node defaults (for diagram elements) */
+  /* Node defaults */
   --node-bg: #FFFFFF;
   --node-border: #DADDE1;
   --node-text: #1C1E21;
