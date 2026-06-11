@@ -1,0 +1,135 @@
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  touch-action: pan-x pan-y;
+  font-family: var(--font-family);
+  font-size: var(--font-size-md);
+  line-height: var(--line-height);
+  color: var(--text-primary);
+  background: var(--bg-app);
+}
+
+.df-app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.df-main {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+.df-canvas {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: var(--bg-canvas);
+  touch-action: none;
+}
+
+#paper {
+  width: 100%;
+  height: 100%;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 2px;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
+
+.df-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.df-skip-link {
+  position: absolute;
+  top: -40px;
+  left: 8px;
+  z-index: 10100;
+  padding: 8px 14px;
+  background: var(--color-primary);
+  color: var(--text-inverse, #fff);
+  font-family: var(--font-family);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: var(--border-radius-sm);
+  box-shadow: var(--shadow-md);
+  transition: top var(--transition-fast);
+}
+.df-skip-link:focus,
+.df-skip-link:focus-visible {
+  top: 8px;
+  outline: 2px solid var(--text-inverse, #fff);
+  outline-offset: 2px;
+}
+
+.df-drag-handle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  cursor: ns-resize;
+  touch-action: none;
+  flex-shrink: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.df-drag-handle::after {
+  content: '';
+  width: 36px;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--text-muted);
+  opacity: 0.5;
+}
+
+@media (max-width: 768px) {
+  .df-main {
+    flex-direction: column;
+  }
+
+  .df-canvas {
+    flex: 1;
+    min-height: 0;
+  }
+}
