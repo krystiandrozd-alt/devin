@@ -25,13 +25,25 @@
   gap: var(--spacing-sm);
 }
 
+.df-stencil__close {
+  flex-shrink: 0;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 6px;
+}
+
+/* Gap 17 (v1.12.0) — wrap the search input + clear-× button so the button
+   can absolute-position itself inside the input's visual edge. The wrapper
+   inherits the input's flex sizing; the input still occupies the wrapper's
+   full width and the clear button sits over its right edge. */
 .df-stencil__search-wrap {
   flex: 1;
   min-width: 0;
   position: relative;
   display: flex;
 }
-
+/* Suppress the WebKit-native search cancel button — we render our own so
+   styling stays consistent across browsers (Firefox doesn't show one). */
 .df-stencil__search::-webkit-search-cancel-button { display: none; }
 
 .df-stencil__search {
@@ -39,7 +51,7 @@
   min-width: 0;
   width: 100%;
   padding: 6px var(--spacing-md);
-  padding-right: 28px;
+  padding-right: 28px; /* leave room for the clear button */
   border: 1px solid var(--border-color);
   border-radius: var(--border-radius-sm);
   background: var(--bg-app);
@@ -74,12 +86,104 @@
   color: var(--text-primary);
   background: var(--stencil-item-hover);
 }
+.df-stencil__search-clear[hidden] { display: none; }
+
+.df-stencil__search::placeholder {
+  color: var(--text-muted);
+}
+
+.df-stencil__search:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px rgba(53, 120, 229, 0.12);
+}
+
+[data-theme="dark"] .df-stencil__search:focus {
+  box-shadow: 0 0 0 3px rgba(218, 78, 85, 0.12);
+}
 
 .df-stencil__body {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
   padding: var(--spacing-xs) 0;
+}
+
+/* Scrollbar styling — matches mateuszdabrowski.pl */
+.df-stencil__body::-webkit-scrollbar {
+  width: 7px;
+}
+
+.df-stencil__body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.df-stencil__body::-webkit-scrollbar-thumb {
+  background: var(--border-color);
+  border-radius: 4px;
+}
+
+.df-stencil__body::-webkit-scrollbar-thumb:hover {
+  background: var(--border-color-strong);
+}
+
+.df-stencil__category-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  user-select: none;
+  transition: color var(--transition-fast);
+}
+
+.df-stencil__category-header:hover {
+  color: var(--text-secondary);
+}
+
+.df-stencil__category-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-muted);
+  font-weight: 400;
+  background: var(--bg-app);
+  padding: 2px 7px;
+  border-radius: 10px;
+}
+
+.df-stencil__category--collapsed .df-stencil__items {
+  display: none;
+}
+
+/* CR-6.2 (v1.12.0) — collapse/expand chevron on each stencil category header.
+   The chevron points DOWN when the category is expanded (its content is
+   visible below) and ROTATES -90° to point right when collapsed. */
+.df-stencil__category-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.df-stencil__category-chevron {
+  flex-shrink: 0;
+  transition: transform var(--transition-fast);
+  transform-origin: center;
+}
+.df-stencil__category--collapsed .df-stencil__category-chevron {
+  transform: rotate(-90deg);
+}
+
+.df-stencil__items {
+  padding: 2px var(--spacing-sm) var(--spacing-sm);
+}
+
+.df-stencil__items--grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 38px);
+  gap: 2px;
+  padding: 4px var(--spacing-sm) var(--spacing-sm);
 }
 
 .df-stencil__item {
@@ -99,20 +203,143 @@
   background: var(--stencil-item-hover);
 }
 
-.df-stencil__category-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: var(--spacing-sm) var(--spacing-md);
-  cursor: pointer;
-  font-size: var(--font-size-xs);
-  font-weight: 700;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
-  user-select: none;
+.df-stencil__item:active {
+  cursor: grabbing;
 }
 
+.df-stencil__item--icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  padding: 7px;
+  border-radius: var(--border-radius-sm);
+}
+
+.df-stencil__item-icon {
+  width: 22px;
+  height: 22px;
+  padding: 1px;
+  flex-shrink: 0;
+  fill: var(--text-secondary);
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.df-stencil__item-icon--placeholder {
+  width: 22px;
+  height: 22px;
+  background: var(--border-color);
+  border-radius: 4px;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.df-stencil__item-icon--svg {
+  color: var(--text-secondary);
+  fill: none;
+  stroke: var(--text-secondary);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.df-stencil__icon-preview {
+  width: 22px;
+  height: 22px;
+  fill: var(--text-secondary);
+}
+
+.df-stencil__item--icon:hover .df-stencil__icon-preview {
+  fill: var(--text-primary);
+}
+
+.df-stencil__item-label {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+
+/* ── My Templates (custom user-saved groups — see js/templates.js) ──
+   Tiles in an auto-fill grid: a static SVG thumbnail (rendered from a
+   throwaway mini-paper), the template name below, and a hover-revealed
+   delete (×) in the top-right corner. */
+.df-stencil__items--templates {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(84px, 1fr));
+  gap: var(--spacing-sm);
+  padding: 4px var(--spacing-sm) var(--spacing-sm);
+}
+
+.df-stencil__item--template {
+  position: relative;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: var(--spacing-sm);
+  border: 1px solid var(--border-color);
+}
+
+.df-template-thumb {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 64px;
+  border-radius: var(--border-radius-sm);
+  background: var(--bg-canvas, rgba(127, 127, 127, 0.06));
+  overflow: hidden;
+  /* Let drags / dblclicks originate from the tile, not the inner SVG. */
+  pointer-events: none;
+}
+
+.df-template-thumb__svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.df-stencil__item--template .df-stencil__item-label {
+  flex: none;
+  text-align: center;
+  font-size: var(--font-size-xs, 11px);
+}
+
+.df-template-delete {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: var(--bg-surface, #2a2d32);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity var(--transition-fast), color var(--transition-fast), background var(--transition-fast);
+}
+
+.df-stencil__item--template:hover .df-template-delete,
+.df-template-delete:focus-visible {
+  opacity: 1;
+}
+
+.df-template-delete:hover {
+  color: #fff;
+  background: var(--brand-red, #DA4E55);
+}
+
+/* Drag handle base rule defined in layout.css */
+
+/* ── Mobile stencil — bottom panel ──────────────────────────────── */
 @media (max-width: 768px) {
   .df-stencil {
     width: 100%;
@@ -130,5 +357,56 @@
     height: 0;
     min-width: 0;
     border-top: none;
+  }
+
+  .df-stencil--hidden .df-drag-handle {
+    display: none;
+  }
+
+  .df-stencil .df-drag-handle {
+    display: flex;
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--stencil-bg);
+  }
+
+  /* Touch-friendly stencil items */
+  .df-stencil__search {
+    padding: 10px var(--spacing-md);
+    font-size: var(--font-size-md);
+  }
+
+  .df-stencil__item {
+    padding: 10px var(--spacing-sm);
+    min-height: 44px;
+    font-size: var(--font-size-md);
+  }
+
+  .df-stencil__item-icon {
+    width: 26px;
+    height: 26px;
+  }
+
+  .df-stencil__item-icon--placeholder {
+    width: 26px;
+    height: 26px;
+  }
+
+  .df-stencil__category-header {
+    padding: 10px var(--spacing-md);
+    min-height: 40px;
+    font-size: var(--font-size-xs);
+  }
+
+  .df-stencil__items--grid {
+    grid-template-columns: repeat(auto-fill, 44px);
+    gap: 4px;
+  }
+
+  .df-stencil__item--icon {
+    width: 44px;
+    height: 44px;
+    padding: 8px;
   }
 }
