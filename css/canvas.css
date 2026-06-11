@@ -1,12 +1,14 @@
-/* cursor: default prevents text cursor over canvas */
+/* cursor: default prevents text cursor over canvas; position/background set in layout.css */
 .df-canvas {
   cursor: default;
 }
 
+/* JointJS paper SVG fills the container */
 .joint-paper {
   background: transparent !important;
 }
 
+/* Hide ports by default, show on element hover or selection */
 .joint-port {
   opacity: 0;
   transition: opacity var(--transition-fast);
@@ -19,12 +21,62 @@
   pointer-events: all;
 }
 
+/* Data Cloud mapping mode puts a port on EVERY field — revealing them all just
+   because the object is SELECTED is visual clutter. For DataObjects, reveal ports
+   only on object HOVER, never on bare selection (CR). The selected+hover rule wins
+   by specificity so hovering a selected object still shows them. */
+.joint-type-df-dataobject.selected .joint-port { opacity: 0; pointer-events: none; }
+.joint-type-df-dataobject.selected:hover .joint-port { opacity: 1; pointer-events: all; }
+
+/* sf.Link: the external-link icon hit area is a circle button — highlight on hover
+   to signal it's clickable (opens the URL). The rest of the element just selects. */
+.joint-element[data-type="sf.Link"] [joint-selector="iconHit"] {
+  transition: fill var(--transition-fast), stroke var(--transition-fast);
+}
+.joint-element[data-type="sf.Link"] [joint-selector="iconHit"]:hover {
+  fill: rgba(29, 115, 201, 0.12);
+  stroke: #1D73C9;
+}
+
+/* Selection highlight — applied via JS classList.add('selected') */
 .joint-element.selected .body,
 .joint-element.selected rect.body {
   stroke: var(--selection-color) !important;
   stroke-width: 2 !important;
 }
 
+.joint-element.selected > g:not(.do-badges-g) > rect:first-child {
+  stroke: var(--selection-color) !important;
+  stroke-width: 2 !important;
+}
+
+/* Line shape selection — highlight the line, not the hit area */
+.joint-element.selected line[joint-selector="line"] {
+  stroke: var(--selection-color) !important;
+}
+
+.joint-element.selected rect[joint-selector="hitArea"] {
+  stroke: none !important;
+}
+
+/* Show and highlight available ports when dragging a link */
+.joint-port.available-magnet {
+  opacity: 1 !important;
+  pointer-events: all !important;
+}
+
+.joint-port.available-magnet circle {
+  fill: var(--brand-amber) !important;
+}
+
+/* Show all ports on available connection targets */
+.joint-paper .available-cell .joint-port {
+  opacity: 1 !important;
+  pointer-events: all !important;
+}
+
+/* Link styling — JointJS v4 renders the link body as
+ * <path joint-selector="line">, NOT the v3 .connection class. */
 .joint-link [joint-selector="line"] {
   transition: stroke var(--transition-fast);
 }
@@ -42,12 +94,22 @@
   opacity: 0.4 !important;
   transition: opacity 180ms ease-out;
 }
+.joint-element.df-element-dimmed:hover,
+.joint-element.df-element-dimmed.selected {
+  opacity: 1 !important;
+}
+
+.do-field-row.df-field-dimmed {
+  opacity: 0.22;
+  transition: opacity 160ms ease-out;
+}
 
 .joint-link:hover [joint-selector="line"],
 .joint-link.selected [joint-selector="line"] {
   stroke: var(--selection-color) !important;
 }
 
+/* Rubber-band selection rectangle */
 .df-selection-rect {
   position: absolute;
   border: 1.5px dashed var(--selection-color);
@@ -61,6 +123,23 @@
   background: rgba(218, 78, 85, 0.08);
 }
 
+.joint-paper .df-drop-target .body,
+.joint-paper .df-drop-target rect {
+  stroke: var(--brand-amber) !important;
+  stroke-width: 2px !important;
+}
+
+/* Drop ghost */
+.df-drop-ghost__rect {
+  fill: none;
+  stroke: var(--brand-amber);
+  stroke-width: 2;
+  stroke-dasharray: 6 5;
+  opacity: 0.85;
+  vector-effect: non-scaling-stroke;
+}
+
+/* Empty-canvas ghost wireframe */
 .df-canvas-empty {
   position: absolute;
   inset: 0;
@@ -75,7 +154,22 @@
   user-select: none;
 }
 #canvas-container.is-empty .df-canvas-empty { display: flex; }
-
+#canvas-container:has(.df-table-view:not([hidden])) .df-canvas-empty { display: none; }
+.df-canvas-empty__wf {
+  display: none;
+  width: min(44%, 400px);
+  height: auto;
+  opacity: 0.16;
+}
+#canvas-container.is-empty[data-diagram-type="architecture"] .df-canvas-empty__wf[data-wf="architecture"],
+#canvas-container.is-empty[data-diagram-type="process"]      .df-canvas-empty__wf[data-wf="process"],
+#canvas-container.is-empty[data-diagram-type="sequence"]     .df-canvas-empty__wf[data-wf="sequence"],
+#canvas-container.is-empty[data-diagram-type="datamodel"]    .df-canvas-empty__wf[data-wf="datamodel"],
+#canvas-container.is-empty[data-diagram-type="datamapping"]  .df-canvas-empty__wf[data-wf="datamapping"],
+#canvas-container.is-empty[data-diagram-type="gantt"]        .df-canvas-empty__wf[data-wf="gantt"],
+#canvas-container.is-empty[data-diagram-type="org"]          .df-canvas-empty__wf[data-wf="org"] {
+  display: block;
+}
 .df-canvas-empty__caption {
   margin: 0;
   font-family: var(--font-family);
@@ -86,24 +180,32 @@
   letter-spacing: 0.3px;
 }
 
-.df-table-view {
-  position: absolute;
-  inset: 0;
-  background: var(--bg-canvas);
-  overflow: hidden;
-  z-index: 6;
+/* CR-6.1: inline markdown inside sf.TextLabel / sf.Note foreignObjects. */
+foreign Object[data-md] code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(0,0,0,0.08);
+  color: #C8553D;
 }
+[data-theme="dark"] foreignObject[data-md] code {
+  background: rgba(255,255,255,0.10);
+  color: #F08367;
+}
+foreignObject[data-md] strong { font-weight: 700; }
+foreignObject[data-md] em { font-style: italic; }
+foreignObject[data-md] del { text-decoration: line-through; }
 
-.df-flow-overlay {
-  stroke: var(--bg-canvas) !important;
-  stroke-dasharray: 4 8;
-  animation: df-flow 0.6s linear infinite;
+/* Blinking caret on canvas label */
+.df-canvas-caret {
+  animation: df-blink 1s step-end infinite;
   pointer-events: none;
 }
 
-@keyframes df-flow {
-  from { stroke-dashoffset: 12; }
-  to   { stroke-dashoffset: 0; }
+@keyframes df-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
 
 @media (max-width: 768px) {
@@ -116,4 +218,157 @@
     opacity: 1;
     pointer-events: all;
   }
+
+  .joint-link .marker-vertex {
+    r: 12;
+  }
+
+  .joint-link .connection-wrap {
+    stroke-width: 24px;
+  }
+}
+
+/* Inline text editing overlay */
+.df-inline-edit {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+}
+
+.df-inline-edit__input {
+  pointer-events: all;
+  box-shadow: 0 0 0 3px rgba(53, 120, 229, 0.2);
+}
+
+[data-theme="dark"] .df-inline-edit__input {
+  box-shadow: 0 0 0 3px rgba(218, 78, 85, 0.2);
+}
+
+/* Animated connector flow */
+.df-flow-overlay {
+  stroke: var(--bg-canvas) !important;
+  stroke-dasharray: 4 8;
+  animation: df-flow 0.6s linear infinite;
+  pointer-events: none;
+}
+
+@keyframes df-flow {
+  from { stroke-dashoffset: 12; }
+  to   { stroke-dashoffset: 0; }
+}
+
+/* User-chosen line style overlay (Safari-safe dashed/dotted) */
+.df-line-style-overlay {
+  stroke: var(--bg-canvas) !important;
+  pointer-events: none;
+  fill: none;
+}
+
+/* Data Mapping table view */
+.df-table-view {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-canvas);
+  overflow: hidden;
+  z-index: 6;
+}
+.df-tbl { height: 100%; display: flex; flex-direction: column; }
+.df-tbl__topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 var(--spacing-md);
+  height: var(--panel-header-height);
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border-color);
+  flex: 0 0 auto;
+}
+.df-tbl__title { margin: 0; font-size: 15px; font-weight: 700; color: var(--text-primary); white-space: nowrap; }
+.df-tbl__note { font-size: 12px; color: var(--text-muted); white-space: nowrap; }
+.df-tbl__csv {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  background: var(--bg-app);
+  border: 1px solid var(--border-color);
+  border-radius: var(--border-radius-sm);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: border-color var(--transition-fast), color var(--transition-fast);
+}
+.df-tbl__csv:hover { color: var(--text-primary); border-color: var(--border-color-strong); }
+.df-tbl__csv svg { flex-shrink: 0; }
+.df-tbl__toggle.df-toolbar__menu-item {
+  width: auto;
+  height: 30px;
+  margin: 0;
+  white-space: nowrap;
+}
+.df-tbl__scroll { flex: 1 1 auto; overflow: auto; }
+.df-tbl__table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 12.5px;
+  white-space: nowrap;
+  width: 100%;
+}
+.df-tbl__sec {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 8px 14px;
+  text-align: left;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #fff;
+}
+.df-tbl__sec--src { background: #F6B355; }
+.df-tbl__sec--map { background: #DA4E55; }
+.df-tbl__sec--tgt { background: #1D73C9; }
+.df-tbl__cols th {
+  position: sticky;
+  top: 33px;
+  z-index: 2;
+  background: var(--bg-surface-raised);
+  color: var(--text-secondary);
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  padding: 6px 10px;
+  border-bottom: 2px solid var(--border-color-strong);
+}
+.df-tbl__table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+.df-tbl__table tbody tr:hover td { background: rgba(127, 127, 127, 0.07); }
+.df-tbl__center { text-align: center; }
+.df-tbl__placeholder { color: var(--text-muted); font-style: italic; }
+.df-tbl__strike { text-decoration: line-through; color: var(--text-muted); }
+.df-tbl__th--sortable { cursor: pointer; user-select: none; }
+.df-tbl__th--sortable:hover { color: var(--text-primary); }
+.df-tbl__th--sorted { color: var(--text-primary); }
+.df-tbl__sort-ind { margin-left: 4px; font-size: 9px; opacity: 0.9; }
+.df-tbl__warn-wrap { display: inline-flex; vertical-align: -2px; margin-left: 6px; cursor: help; }
+.df-tbl__warn { flex-shrink: 0; }
+.df-tbl__divider { border-left: 2px solid var(--border-color-strong); }
+.df-tbl__row--unmapped td { color: var(--text-muted); font-style: italic; }
+.df-tbl__empty {
+  text-align: center;
+  color: var(--text-muted);
+  padding: 44px 24px;
+  white-space: normal;
+  font-size: 13px;
 }
