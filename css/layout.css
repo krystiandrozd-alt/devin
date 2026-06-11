@@ -118,7 +118,7 @@ select:focus-visible {
   outline-offset: 2px;
 }
 
-/* ── Drag handle for mobile bottom sheets ───────────────────────────────── */
+/* ── Drag handle for mobile bottom sheets ─────────────────────── */
 .df-drag-handle {
   display: none;
   align-items: center;
@@ -140,7 +140,7 @@ select:focus-visible {
   opacity: 0.5;
 }
 
-/* ── Mobile layout ───────────────────────────────────────────────────── */
+/* ── Mobile layout ─────────────────────────────────────────────── */
 @media (max-width: 768px) {
   .df-main {
     flex-direction: column;
