@@ -3,1923 +3,2543 @@
 
 import { wrapSelectionWithMarker } from './markdown.js?v=1.15.7';
 import { confirmModal, showToast, buildModal } from './feedback.js?v=1.15.7';
-import { buildColorInput } from './color-input.js?v=1.15.7';
+import { applyTheme } from './theme.js?v=1.15.7';
 
-// ─── accordion helper ───────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────
+   Bootstrap
+───────────────────────────────────────────── */
+export function initProperties(editor) {
+  const panel = document.getElementById('properties-panel');
+  if (!panel) return;
 
-function buildAccordion(id, title, contentEl, opts = {}) {
+  editor.on('selectionchange', () => renderProperties(editor, panel));
+  editor.on('contentchange',   () => renderProperties(editor, panel));
+  renderProperties(editor, panel);
+}
+
+/* ─────────────────────────────────────────────
+   Main renderer
+───────────────────────────────────────────── */
+function renderProperties(editor, panel) {
+  const sel = editor.getSelection();
+  panel.innerHTML = '';
+
+  if (!sel || sel.isEmpty()) {
+    panel.appendChild(emptyState());
+    return;
+  }
+
+  const nodes = sel.getNodes();
+  if (nodes.length === 0) {
+    panel.appendChild(emptyState());
+    return;
+  }
+
+  // Mixed-type selections get a summary section only
+  const types = [...new Set(nodes.map(n => n.type))];
+  if (types.length > 1) {
+    panel.appendChild(buildMixedSection(nodes));
+    return;
+  }
+
+  const type = types[0];
+  const builders = {
+    text:      buildTextSection,
+    image:     buildImageSection,
+    shape:     buildShapeSection,
+    table:     buildTableSection,
+    code:      buildCodeSection,
+    embed:     buildEmbedSection,
+    connector: buildConnectorSection,
+    group:     buildGroupSection,
+    frame:     buildFrameSection,
+  };
+
+  const builder = builders[type];
+  if (builder) {
+    panel.appendChild(builder(nodes, editor));
+  } else {
+    panel.appendChild(buildGenericSection(nodes, editor));
+  }
+}
+
+/* ─────────────────────────────────────────────
+   Empty state
+───────────────────────────────────────────── */
+function emptyState() {
   const wrap = document.createElement('div');
-  wrap.className = 'prop-accordion' + (opts.open ? ' open' : '');
-  wrap.dataset.section = id;
-
-  const hdr = document.createElement('div');
-  hdr.className = 'prop-accordion-header';
-  hdr.innerHTML = `<span>${title}</span><svg class="chevron" viewBox="0 0 10 6"><polyline points="1,1 5,5 9,1"/></svg>`;
-
-  const body = document.createElement('div');
-  body.className = 'prop-accordion-body';
-  body.appendChild(contentEl);
-
-  hdr.addEventListener('click', () => {
-    wrap.classList.toggle('open');
-  });
-
-  wrap.appendChild(hdr);
-  wrap.appendChild(body);
+  wrap.className = 'props-empty';
+  wrap.innerHTML = `
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+         stroke="currentColor" stroke-width="1.5">
+      <rect x="3" y="3" width="18" height="18" rx="2"/>
+      <path d="M3 9h18M9 21V9"/>
+    </svg>
+    <p>Select an element<br>to inspect its properties.</p>
+  `;
   return wrap;
 }
 
-// ─── label / input row helper ────────────────────────────────────────────────
+/* ─────────────────────────────────────────────
+   Section scaffold
+───────────────────────────────────────────── */
+function makeSection(title, collapsed = false) {
+  const section = document.createElement('div');
+  section.className = 'props-section' + (collapsed ? ' collapsed' : '');
 
-function row(labelText, inputEl, opts = {}) {
-  const r = document.createElement('div');
-  r.className = 'prop-row' + (opts.wide ? ' wide' : '');
+  const header = document.createElement('div');
+  header.className = 'props-section-header';
+  header.innerHTML = `
+    <span class="props-section-title">${title}</span>
+    <svg class="props-chevron" width="12" height="12" viewBox="0 0 12 12">
+      <path d="M2 4l4 4 4-4" stroke="currentColor" stroke-width="1.5"
+            fill="none" stroke-linecap="round"/>
+    </svg>
+  `;
+  header.addEventListener('click', () => section.classList.toggle('collapsed'));
 
-  if (labelText) {
-    const lbl = document.createElement('label');
-    lbl.textContent = labelText;
-    if (opts.for) lbl.htmlFor = opts.for;
-    r.appendChild(lbl);
-  }
+  const body = document.createElement('div');
+  body.className = 'props-section-body';
 
-  if (inputEl) r.appendChild(inputEl);
-  return r;
+  section.appendChild(header);
+  section.appendChild(body);
+  return { section, body };
 }
 
-// ─── number input ────────────────────────────────────────────────────────────
+/* ─────────────────────────────────────────────
+   Row helpers
+───────────────────────────────────────────── */
+function makeRow(label, control) {
+  const row = document.createElement('div');
+  row.className = 'props-row';
 
-function numInput(value, opts = {}) {
-  const el = document.createElement('input');
-  el.type = 'number';
-  el.className = 'prop-num';
-  el.value = value ?? '';
-  if (opts.min !== undefined) el.min = opts.min;
-  if (opts.max !== undefined) el.max = opts.max;
-  if (opts.step !== undefined) el.step = opts.step;
-  if (opts.placeholder !== undefined) el.placeholder = opts.placeholder;
-  if (opts.disabled) el.disabled = true;
-  return el;
+  const lbl = document.createElement('label');
+  lbl.className = 'props-label';
+  lbl.textContent = label;
+
+  row.appendChild(lbl);
+  row.appendChild(control);
+  return row;
 }
 
-// ─── select input ────────────────────────────────────────────────────────────
+function makeTextInput(value, onChange) {
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'props-input';
+  input.value = value ?? '';
+  input.addEventListener('change', e => onChange(e.target.value));
+  return input;
+}
 
-function selectInput(options, current) {
-  const el = document.createElement('select');
-  el.className = 'prop-select';
-  for (const [val, label] of options) {
+function makeNumberInput(value, min, max, step, onChange) {
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.className = 'props-input props-input--number';
+  input.value = value ?? '';
+  if (min !== undefined) input.min = min;
+  if (max !== undefined) input.max = max;
+  if (step !== undefined) input.step = step;
+  input.addEventListener('change', e => onChange(+e.target.value));
+  return input;
+}
+
+function makeColorInput(value, onChange) {
+  const wrap = document.createElement('div');
+  wrap.className = 'props-color-wrap';
+
+  const swatch = document.createElement('input');
+  swatch.type = 'color';
+  swatch.className = 'props-color-swatch';
+  swatch.value = normalizeHex(value);
+
+  const text = document.createElement('input');
+  text.type = 'text';
+  text.className = 'props-input props-color-text';
+  text.value = value ?? '';
+  text.maxLength = 9;
+
+  swatch.addEventListener('input', e => {
+    text.value = e.target.value;
+    onChange(e.target.value);
+  });
+  text.addEventListener('change', e => {
+    const hex = normalizeHex(e.target.value);
+    swatch.value = hex;
+    onChange(hex);
+  });
+
+  wrap.appendChild(swatch);
+  wrap.appendChild(text);
+  return wrap;
+}
+
+function makeSelect(options, current, onChange) {
+  const sel = document.createElement('select');
+  sel.className = 'props-select';
+  options.forEach(([val, label]) => {
     const opt = document.createElement('option');
     opt.value = val;
     opt.textContent = label;
     if (val === current) opt.selected = true;
-    el.appendChild(opt);
-  }
-  return el;
-}
-
-// ─── text input ──────────────────────────────────────────────────────────────
-
-function textInput(value, opts = {}) {
-  const el = document.createElement('input');
-  el.type = 'text';
-  el.className = 'prop-text';
-  el.value = value ?? '';
-  if (opts.placeholder) el.placeholder = opts.placeholder;
-  if (opts.disabled) el.disabled = true;
-  return el;
-}
-
-// ─── textarea ────────────────────────────────────────────────────────────────
-
-function textArea(value, opts = {}) {
-  const el = document.createElement('textarea');
-  el.className = 'prop-textarea';
-  el.value = value ?? '';
-  el.rows = opts.rows ?? 3;
-  if (opts.placeholder) el.placeholder = opts.placeholder;
-  if (opts.disabled) el.disabled = true;
-  return el;
-}
-
-// ─── checkbox ────────────────────────────────────────────────────────────────
-
-function checkBox(checked, id) {
-  const el = document.createElement('input');
-  el.type = 'checkbox';
-  el.className = 'prop-check';
-  el.id = id;
-  el.checked = !!checked;
-  return el;
-}
-
-// ─── icon button ─────────────────────────────────────────────────────────────
-
-function iconBtn(svgPath, title, cls = '') {
-  const btn = document.createElement('button');
-  btn.className = 'prop-icon-btn' + (cls ? ' ' + cls : '');
-  btn.title = title;
-  btn.innerHTML = `<svg viewBox="0 0 16 16">${svgPath}</svg>`;
-  return btn;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  SHAPE PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildShapeProperties(shape, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  // ── geometry section ──
-  const geoContent = document.createElement('div');
-  geoContent.className = 'prop-section-content';
-
-  // x / y
-  const xIn = numInput(Math.round(shape.x), { step: 1 });
-  const yIn = numInput(Math.round(shape.y), { step: 1 });
-  xIn.addEventListener('change', () => onChange({ x: parseFloat(xIn.value) }));
-  yIn.addEventListener('change', () => onChange({ y: parseFloat(yIn.value) }));
-  const xyRow = document.createElement('div');
-  xyRow.className = 'prop-row twin';
-  xyRow.appendChild(row('X', xIn));
-  xyRow.appendChild(row('Y', yIn));
-  geoContent.appendChild(xyRow);
-
-  // width / height
-  const wIn = numInput(Math.round(shape.width), { min: 10, step: 1 });
-  const hIn = numInput(Math.round(shape.height), { min: 10, step: 1 });
-  wIn.addEventListener('change', () => onChange({ width: parseFloat(wIn.value) }));
-  hIn.addEventListener('change', () => onChange({ height: parseFloat(hIn.value) }));
-  const whRow = document.createElement('div');
-  whRow.className = 'prop-row twin';
-  whRow.appendChild(row('W', wIn));
-  whRow.appendChild(row('H', hIn));
-  geoContent.appendChild(whRow);
-
-  // rotation
-  const rotIn = numInput(Math.round((shape.rotation ?? 0) * 180 / Math.PI), { step: 1 });
-  rotIn.addEventListener('change', () =>
-    onChange({ rotation: parseFloat(rotIn.value) * Math.PI / 180 }));
-  geoContent.appendChild(row('Rotation°', rotIn));
-
-  frag.appendChild(buildAccordion('geometry', 'Geometry', geoContent, { open: true }));
-
-  // ── fill section ──
-  const fillContent = document.createElement('div');
-  fillContent.className = 'prop-section-content';
-
-  const fillColorIn = buildColorInput(shape.fillColor ?? '#ffffff', (c) =>
-    onChange({ fillColor: c }));
-  fillContent.appendChild(row('Color', fillColorIn));
-
-  const fillOpaIn = numInput((shape.fillOpacity ?? 1) * 100, { min: 0, max: 100, step: 1 });
-  fillOpaIn.addEventListener('change', () =>
-    onChange({ fillOpacity: parseFloat(fillOpaIn.value) / 100 }));
-  fillContent.appendChild(row('Opacity %', fillOpaIn));
-
-  const fillStyleSel = selectInput([
-    ['solid', 'Solid'], ['none', 'None'], ['hatch', 'Hatch'],
-    ['dots', 'Dots'], ['cross', 'Cross'],
-  ], shape.fillStyle ?? 'solid');
-  fillStyleSel.addEventListener('change', () => onChange({ fillStyle: fillStyleSel.value }));
-  fillContent.appendChild(row('Style', fillStyleSel));
-
-  frag.appendChild(buildAccordion('fill', 'Fill', fillContent, { open: true }));
-
-  // ── stroke section ──
-  const strokeContent = document.createElement('div');
-  strokeContent.className = 'prop-section-content';
-
-  const strokeColorIn = buildColorInput(shape.strokeColor ?? '#000000', (c) =>
-    onChange({ strokeColor: c }));
-  strokeContent.appendChild(row('Color', strokeColorIn));
-
-  const strokeWidthIn = numInput(shape.strokeWidth ?? 1, { min: 0, max: 50, step: 0.5 });
-  strokeWidthIn.addEventListener('change', () =>
-    onChange({ strokeWidth: parseFloat(strokeWidthIn.value) }));
-  strokeContent.appendChild(row('Width', strokeWidthIn));
-
-  const strokeStyleSel = selectInput([
-    ['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted'], ['none', 'None'],
-  ], shape.strokeStyle ?? 'solid');
-  strokeStyleSel.addEventListener('change', () => onChange({ strokeStyle: strokeStyleSel.value }));
-  strokeContent.appendChild(row('Style', strokeStyleSel));
-
-  frag.appendChild(buildAccordion('stroke', 'Stroke', strokeContent));
-
-  // ── text section ──
-  const textContent = document.createElement('div');
-  textContent.className = 'prop-section-content';
-
-  const labelIn = textArea(shape.label ?? '', { placeholder: 'Label…' });
-  labelIn.addEventListener('input', () => onChange({ label: labelIn.value }));
-  textContent.appendChild(row('Label', labelIn, { wide: true }));
-
-  const fontSizeIn = numInput(shape.fontSize ?? 14, { min: 6, max: 144, step: 1 });
-  fontSizeIn.addEventListener('change', () =>
-    onChange({ fontSize: parseFloat(fontSizeIn.value) }));
-  textContent.appendChild(row('Size', fontSizeIn));
-
-  const fontFamilySel = selectInput([
-    ['sans-serif', 'Sans-serif'], ['serif', 'Serif'],
-    ['monospace', 'Monospace'], ['cursive', 'Cursive'],
-  ], shape.fontFamily ?? 'sans-serif');
-  fontFamilySel.addEventListener('change', () => onChange({ fontFamily: fontFamilySel.value }));
-  textContent.appendChild(row('Font', fontFamilySel));
-
-  const textColorIn = buildColorInput(shape.textColor ?? '#000000', (c) =>
-    onChange({ textColor: c }));
-  textContent.appendChild(row('Color', textColorIn));
-
-  const boldChk = checkBox(shape.bold, 'prop-bold');
-  boldChk.addEventListener('change', () => onChange({ bold: boldChk.checked }));
-  const italicChk = checkBox(shape.italic, 'prop-italic');
-  italicChk.addEventListener('change', () => onChange({ italic: italicChk.checked }));
-
-  const styleRow = document.createElement('div');
-  styleRow.className = 'prop-row twin';
-  const boldRow = row('Bold', boldChk); boldRow.appendChild(boldChk);
-  const italicRow = row('Italic', italicChk); italicRow.appendChild(italicChk);
-  styleRow.appendChild(boldRow);
-  styleRow.appendChild(italicRow);
-  textContent.appendChild(styleRow);
-
-  const alignSel = selectInput([
-    ['left', 'Left'], ['center', 'Center'], ['right', 'Right'],
-  ], shape.textAlign ?? 'center');
-  alignSel.addEventListener('change', () => onChange({ textAlign: alignSel.value }));
-  textContent.appendChild(row('Align', alignSel));
-
-  frag.appendChild(buildAccordion('text', 'Text', textContent));
-
-  // ── shadow section ──
-  const shadowContent = document.createElement('div');
-  shadowContent.className = 'prop-section-content';
-
-  const shadowChk = checkBox(shape.shadow, 'prop-shadow');
-  shadowChk.addEventListener('change', () => onChange({ shadow: shadowChk.checked }));
-  shadowContent.appendChild(row('Enable', shadowChk, { for: 'prop-shadow' }));
-
-  const shadowColorIn = buildColorInput(shape.shadowColor ?? '#00000066', (c) =>
-    onChange({ shadowColor: c }));
-  shadowContent.appendChild(row('Color', shadowColorIn));
-
-  const shadowBlurIn = numInput(shape.shadowBlur ?? 4, { min: 0, max: 50, step: 1 });
-  shadowBlurIn.addEventListener('change', () =>
-    onChange({ shadowBlur: parseFloat(shadowBlurIn.value) }));
-  shadowContent.appendChild(row('Blur', shadowBlurIn));
-
-  const shadowXIn = numInput(shape.shadowX ?? 2, { step: 1 });
-  shadowXIn.addEventListener('change', () =>
-    onChange({ shadowX: parseFloat(shadowXIn.value) }));
-  const shadowYIn = numInput(shape.shadowY ?? 2, { step: 1 });
-  shadowYIn.addEventListener('change', () =>
-    onChange({ shadowY: parseFloat(shadowYIn.value) }));
-  const shadowOffRow = document.createElement('div');
-  shadowOffRow.className = 'prop-row twin';
-  shadowOffRow.appendChild(row('Offset X', shadowXIn));
-  shadowOffRow.appendChild(row('Offset Y', shadowYIn));
-  shadowContent.appendChild(shadowOffRow);
-
-  frag.appendChild(buildAccordion('shadow', 'Shadow', shadowContent));
-
-  // ── corner / shape-specific ──
-  if (shape.type === 'rect' || shape.type === 'rounded-rect') {
-    const cornerContent = document.createElement('div');
-    cornerContent.className = 'prop-section-content';
-
-    const radiusIn = numInput(shape.cornerRadius ?? 0, { min: 0, max: 200, step: 1 });
-    radiusIn.addEventListener('change', () =>
-      onChange({ cornerRadius: parseFloat(radiusIn.value) }));
-    cornerContent.appendChild(row('Radius', radiusIn));
-
-    frag.appendChild(buildAccordion('corner', 'Corner', cornerContent));
-  }
-
-  if (shape.type === 'polygon') {
-    const polyContent = document.createElement('div');
-    polyContent.className = 'prop-section-content';
-
-    const sidesIn = numInput(shape.sides ?? 6, { min: 3, max: 20, step: 1 });
-    sidesIn.addEventListener('change', () =>
-      onChange({ sides: parseInt(sidesIn.value, 10) }));
-    polyContent.appendChild(row('Sides', sidesIn));
-
-    frag.appendChild(buildAccordion('polygon', 'Polygon', polyContent));
-  }
-
-  if (shape.type === 'star') {
-    const starContent = document.createElement('div');
-    starContent.className = 'prop-section-content';
-
-    const pointsIn = numInput(shape.points ?? 5, { min: 3, max: 20, step: 1 });
-    pointsIn.addEventListener('change', () =>
-      onChange({ points: parseInt(pointsIn.value, 10) }));
-    starContent.appendChild(row('Points', pointsIn));
-
-    const innerRatioIn = numInput(((shape.innerRatio ?? 0.4) * 100).toFixed(0),
-      { min: 10, max: 90, step: 1 });
-    innerRatioIn.addEventListener('change', () =>
-      onChange({ innerRatio: parseFloat(innerRatioIn.value) / 100 }));
-    starContent.appendChild(row('Inner %', innerRatioIn));
-
-    frag.appendChild(buildAccordion('star', 'Star', starContent));
-  }
-
-  // ── link section ──
-  const linkContent = document.createElement('div');
-  linkContent.className = 'prop-section-content';
-
-  const linkIn = textInput(shape.link ?? '', { placeholder: 'https://…' });
-  linkIn.addEventListener('change', () => onChange({ link: linkIn.value.trim() || null }));
-  linkContent.appendChild(row('URL', linkIn, { wide: true }));
-
-  const linkTargetSel = selectInput([
-    ['_blank', 'New tab'], ['_self', 'Same tab'],
-  ], shape.linkTarget ?? '_blank');
-  linkTargetSel.addEventListener('change', () => onChange({ linkTarget: linkTargetSel.value }));
-  linkContent.appendChild(row('Open in', linkTargetSel));
-
-  frag.appendChild(buildAccordion('link', 'Link', linkContent));
-
-  // ── metadata section ──
-  const metaContent = document.createElement('div');
-  metaContent.className = 'prop-section-content';
-
-  const tooltipIn = textArea(shape.tooltip ?? '', { placeholder: 'Tooltip on hover…', rows: 2 });
-  tooltipIn.addEventListener('input', () => onChange({ tooltip: tooltipIn.value || null }));
-  metaContent.appendChild(row('Tooltip', tooltipIn, { wide: true }));
-
-  const tagIn = textInput(shape.tag ?? '', { placeholder: 'custom-tag' });
-  tagIn.addEventListener('change', () => onChange({ tag: tagIn.value.trim() || null }));
-  metaContent.appendChild(row('Tag', tagIn));
-
-  frag.appendChild(buildAccordion('meta', 'Metadata', metaContent));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  CONNECTOR PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildConnectorProperties(conn, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  // ── stroke section ──
-  const strokeContent = document.createElement('div');
-  strokeContent.className = 'prop-section-content';
-
-  const colorIn = buildColorInput(conn.color ?? '#444444', (c) => onChange({ color: c }));
-  strokeContent.appendChild(row('Color', colorIn));
-
-  const widthIn = numInput(conn.width ?? 2, { min: 0.5, max: 30, step: 0.5 });
-  widthIn.addEventListener('change', () => onChange({ width: parseFloat(widthIn.value) }));
-  strokeContent.appendChild(row('Width', widthIn));
-
-  const styleIn = selectInput([
-    ['solid', 'Solid'], ['dashed', 'Dashed'], ['dotted', 'Dotted'],
-  ], conn.style ?? 'solid');
-  styleIn.addEventListener('change', () => onChange({ style: styleIn.value }));
-  strokeContent.appendChild(row('Style', styleIn));
-
-  const opacityIn = numInput((conn.opacity ?? 1) * 100, { min: 0, max: 100, step: 1 });
-  opacityIn.addEventListener('change', () =>
-    onChange({ opacity: parseFloat(opacityIn.value) / 100 }));
-  strokeContent.appendChild(row('Opacity %', opacityIn));
-
-  frag.appendChild(buildAccordion('stroke', 'Stroke', strokeContent, { open: true }));
-
-  // ── routing section ──
-  const routeContent = document.createElement('div');
-  routeContent.className = 'prop-section-content';
-
-  const routeSel = selectInput([
-    ['straight', 'Straight'], ['orthogonal', 'Orthogonal'],
-    ['curved', 'Curved'], ['arc', 'Arc'],
-  ], conn.routing ?? 'straight');
-  routeSel.addEventListener('change', () => onChange({ routing: routeSel.value }));
-  routeContent.appendChild(row('Routing', routeSel));
-
-  frag.appendChild(buildAccordion('routing', 'Routing', routeContent, { open: true }));
-
-  // ── arrow ends ──
-  const arrowContent = document.createElement('div');
-  arrowContent.className = 'prop-section-content';
-
-  const arrowOptions = [
-    ['none', 'None'], ['arrow', 'Arrow'], ['open-arrow', 'Open'],
-    ['diamond', 'Diamond'], ['circle', 'Circle'], ['square', 'Square'],
-  ];
-
-  const startSel = selectInput(arrowOptions, conn.startMarker ?? 'none');
-  startSel.addEventListener('change', () => onChange({ startMarker: startSel.value }));
-  arrowContent.appendChild(row('Start', startSel));
-
-  const endSel = selectInput(arrowOptions, conn.endMarker ?? 'arrow');
-  endSel.addEventListener('change', () => onChange({ endMarker: endSel.value }));
-  arrowContent.appendChild(row('End', endSel));
-
-  const markerSizeIn = numInput(conn.markerSize ?? 8, { min: 2, max: 40, step: 1 });
-  markerSizeIn.addEventListener('change', () =>
-    onChange({ markerSize: parseFloat(markerSizeIn.value) }));
-  arrowContent.appendChild(row('Marker size', markerSizeIn));
-
-  frag.appendChild(buildAccordion('arrows', 'Arrows', arrowContent, { open: true }));
-
-  // ── label section ──
-  const labelContent = document.createElement('div');
-  labelContent.className = 'prop-section-content';
-
-  const lblIn = textInput(conn.label ?? '', { placeholder: 'Edge label…' });
-  lblIn.addEventListener('input', () => onChange({ label: lblIn.value }));
-  labelContent.appendChild(row('Text', lblIn, { wide: true }));
-
-  const lblFontSizeIn = numInput(conn.labelFontSize ?? 12, { min: 6, max: 72, step: 1 });
-  lblFontSizeIn.addEventListener('change', () =>
-    onChange({ labelFontSize: parseFloat(lblFontSizeIn.value) }));
-  labelContent.appendChild(row('Size', lblFontSizeIn));
-
-  const lblColorIn = buildColorInput(conn.labelColor ?? '#333333', (c) =>
-    onChange({ labelColor: c }));
-  labelContent.appendChild(row('Color', lblColorIn));
-
-  frag.appendChild(buildAccordion('label', 'Label', labelContent));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  TEXT / STICKY PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildTextProperties(item, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  // ── position ──
-  const posContent = document.createElement('div');
-  posContent.className = 'prop-section-content';
-
-  const xIn = numInput(Math.round(item.x), { step: 1 });
-  const yIn = numInput(Math.round(item.y), { step: 1 });
-  xIn.addEventListener('change', () => onChange({ x: parseFloat(xIn.value) }));
-  yIn.addEventListener('change', () => onChange({ y: parseFloat(yIn.value) }));
-  const xyRow = document.createElement('div');
-  xyRow.className = 'prop-row twin';
-  xyRow.appendChild(row('X', xIn));
-  xyRow.appendChild(row('Y', yIn));
-  posContent.appendChild(xyRow);
-
-  frag.appendChild(buildAccordion('position', 'Position', posContent, { open: true }));
-
-  // ── text ──
-  const textContent = document.createElement('div');
-  textContent.className = 'prop-section-content';
-
-  const bodyIn = textArea(item.body ?? '', { placeholder: 'Text…', rows: 4 });
-  bodyIn.addEventListener('input', () => onChange({ body: bodyIn.value }));
-  textContent.appendChild(row('Content', bodyIn, { wide: true }));
-
-  const fontSizeIn = numInput(item.fontSize ?? 14, { min: 6, max: 144, step: 1 });
-  fontSizeIn.addEventListener('change', () =>
-    onChange({ fontSize: parseFloat(fontSizeIn.value) }));
-  textContent.appendChild(row('Size', fontSizeIn));
-
-  const fontFamilySel = selectInput([
-    ['sans-serif', 'Sans-serif'], ['serif', 'Serif'],
-    ['monospace', 'Monospace'], ['cursive', 'Cursive'],
-  ], item.fontFamily ?? 'sans-serif');
-  fontFamilySel.addEventListener('change', () => onChange({ fontFamily: fontFamilySel.value }));
-  textContent.appendChild(row('Font', fontFamilySel));
-
-  const textColorIn = buildColorInput(item.color ?? '#000000', (c) => onChange({ color: c }));
-  textContent.appendChild(row('Color', textColorIn));
-
-  frag.appendChild(buildAccordion('text', 'Text', textContent, { open: true }));
-
-  // ── sticky-specific ──
-  if (item.type === 'sticky') {
-    const stickyContent = document.createElement('div');
-    stickyContent.className = 'prop-section-content';
-
-    const bgIn = buildColorInput(item.bgColor ?? '#fff9c4', (c) => onChange({ bgColor: c }));
-    stickyContent.appendChild(row('Background', bgIn));
-
-    const rotIn = numInput(Math.round((item.rotation ?? 0) * 180 / Math.PI), { step: 1 });
-    rotIn.addEventListener('change', () =>
-      onChange({ rotation: parseFloat(rotIn.value) * Math.PI / 180 }));
-    stickyContent.appendChild(row('Rotation°', rotIn));
-
-    frag.appendChild(buildAccordion('sticky', 'Sticky note', stickyContent));
-  }
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  IMAGE PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildImageProperties(img, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  // ── geometry ──
-  const geoContent = document.createElement('div');
-  geoContent.className = 'prop-section-content';
-
-  const xIn = numInput(Math.round(img.x), { step: 1 });
-  const yIn = numInput(Math.round(img.y), { step: 1 });
-  xIn.addEventListener('change', () => onChange({ x: parseFloat(xIn.value) }));
-  yIn.addEventListener('change', () => onChange({ y: parseFloat(yIn.value) }));
-  const xyRow = document.createElement('div');
-  xyRow.className = 'prop-row twin';
-  xyRow.appendChild(row('X', xIn));
-  xyRow.appendChild(row('Y', yIn));
-  geoContent.appendChild(xyRow);
-
-  const wIn = numInput(Math.round(img.width), { min: 10, step: 1 });
-  const hIn = numInput(Math.round(img.height), { min: 10, step: 1 });
-  wIn.addEventListener('change', () => onChange({ width: parseFloat(wIn.value) }));
-  hIn.addEventListener('change', () => onChange({ height: parseFloat(hIn.value) }));
-  const whRow = document.createElement('div');
-  whRow.className = 'prop-row twin';
-  whRow.appendChild(row('W', wIn));
-  whRow.appendChild(row('H', hIn));
-  geoContent.appendChild(whRow);
-
-  const lockAspectChk = checkBox(img.lockAspect ?? true, 'prop-lock-aspect');
-  lockAspectChk.addEventListener('change', () =>
-    onChange({ lockAspect: lockAspectChk.checked }));
-  geoContent.appendChild(row('Lock aspect', lockAspectChk, { for: 'prop-lock-aspect' }));
-
-  frag.appendChild(buildAccordion('geometry', 'Geometry', geoContent, { open: true }));
-
-  // ── appearance ──
-  const appContent = document.createElement('div');
-  appContent.className = 'prop-section-content';
-
-  const opacityIn = numInput((img.opacity ?? 1) * 100, { min: 0, max: 100, step: 1 });
-  opacityIn.addEventListener('change', () =>
-    onChange({ opacity: parseFloat(opacityIn.value) / 100 }));
-  appContent.appendChild(row('Opacity %', opacityIn));
-
-  const fitSel = selectInput([
-    ['contain', 'Contain'], ['cover', 'Cover'],
-    ['fill', 'Fill'], ['none', 'None'],
-  ], img.fit ?? 'contain');
-  fitSel.addEventListener('change', () => onChange({ fit: fitSel.value }));
-  appContent.appendChild(row('Fit', fitSel));
-
-  frag.appendChild(buildAccordion('appearance', 'Appearance', appContent, { open: true }));
-
-  // ── border ──
-  const borderContent = document.createElement('div');
-  borderContent.className = 'prop-section-content';
-
-  const borderColorIn = buildColorInput(img.borderColor ?? '#000000', (c) =>
-    onChange({ borderColor: c }));
-  borderContent.appendChild(row('Color', borderColorIn));
-
-  const borderWidthIn = numInput(img.borderWidth ?? 0, { min: 0, max: 20, step: 0.5 });
-  borderWidthIn.addEventListener('change', () =>
-    onChange({ borderWidth: parseFloat(borderWidthIn.value) }));
-  borderContent.appendChild(row('Width', borderWidthIn));
-
-  const borderRadiusIn = numInput(img.borderRadius ?? 0, { min: 0, max: 200, step: 1 });
-  borderRadiusIn.addEventListener('change', () =>
-    onChange({ borderRadius: parseFloat(borderRadiusIn.value) }));
-  borderContent.appendChild(row('Radius', borderRadiusIn));
-
-  frag.appendChild(buildAccordion('border', 'Border', borderContent));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  FRAME PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildFrameProperties(frame, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  // ── geometry ──
-  const geoContent = document.createElement('div');
-  geoContent.className = 'prop-section-content';
-
-  const xIn = numInput(Math.round(frame.x), { step: 1 });
-  const yIn = numInput(Math.round(frame.y), { step: 1 });
-  xIn.addEventListener('change', () => onChange({ x: parseFloat(xIn.value) }));
-  yIn.addEventListener('change', () => onChange({ y: parseFloat(yIn.value) }));
-  const xyRow = document.createElement('div');
-  xyRow.className = 'prop-row twin';
-  xyRow.appendChild(row('X', xIn));
-  xyRow.appendChild(row('Y', yIn));
-  geoContent.appendChild(xyRow);
-
-  const wIn = numInput(Math.round(frame.width), { min: 50, step: 1 });
-  const hIn = numInput(Math.round(frame.height), { min: 50, step: 1 });
-  wIn.addEventListener('change', () => onChange({ width: parseFloat(wIn.value) }));
-  hIn.addEventListener('change', () => onChange({ height: parseFloat(hIn.value) }));
-  const whRow = document.createElement('div');
-  whRow.className = 'prop-row twin';
-  whRow.appendChild(row('W', wIn));
-  whRow.appendChild(row('H', hIn));
-  geoContent.appendChild(whRow);
-
-  frag.appendChild(buildAccordion('geometry', 'Geometry', geoContent, { open: true }));
-
-  // ── title ──
-  const titleContent = document.createElement('div');
-  titleContent.className = 'prop-section-content';
-
-  const titleIn = textInput(frame.title ?? '', { placeholder: 'Frame title…' });
-  titleIn.addEventListener('input', () => onChange({ title: titleIn.value }));
-  titleContent.appendChild(row('Title', titleIn, { wide: true }));
-
-  const titleSizeIn = numInput(frame.titleFontSize ?? 13, { min: 8, max: 48, step: 1 });
-  titleSizeIn.addEventListener('change', () =>
-    onChange({ titleFontSize: parseFloat(titleSizeIn.value) }));
-  titleContent.appendChild(row('Font size', titleSizeIn));
-
-  const titleColorIn = buildColorInput(frame.titleColor ?? '#333333', (c) =>
-    onChange({ titleColor: c }));
-  titleContent.appendChild(row('Color', titleColorIn));
-
-  frag.appendChild(buildAccordion('title', 'Title', titleContent, { open: true }));
-
-  // ── background ──
-  const bgContent = document.createElement('div');
-  bgContent.className = 'prop-section-content';
-
-  const bgColorIn = buildColorInput(frame.bgColor ?? '#f5f5f5', (c) =>
-    onChange({ bgColor: c }));
-  bgContent.appendChild(row('Color', bgColorIn));
-
-  const bgOpacityIn = numInput((frame.bgOpacity ?? 1) * 100, { min: 0, max: 100, step: 1 });
-  bgOpacityIn.addEventListener('change', () =>
-    onChange({ bgOpacity: parseFloat(bgOpacityIn.value) / 100 }));
-  bgContent.appendChild(row('Opacity %', bgOpacityIn));
-
-  frag.appendChild(buildAccordion('background', 'Background', bgContent));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  DIAGRAM (canvas) PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildDiagramProperties(diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  // ── canvas ──
-  const canvasContent = document.createElement('div');
-  canvasContent.className = 'prop-section-content';
-
-  const bgColorIn = buildColorInput(diagram.bgColor ?? '#ffffff', (c) =>
-    onChange({ bgColor: c }));
-  canvasContent.appendChild(row('Background', bgColorIn));
-
-  const gridChk = checkBox(diagram.showGrid ?? true, 'prop-grid');
-  gridChk.addEventListener('change', () => onChange({ showGrid: gridChk.checked }));
-  canvasContent.appendChild(row('Show grid', gridChk, { for: 'prop-grid' }));
-
-  const snapChk = checkBox(diagram.snapToGrid ?? true, 'prop-snap');
-  snapChk.addEventListener('change', () => onChange({ snapToGrid: snapChk.checked }));
-  canvasContent.appendChild(row('Snap to grid', snapChk, { for: 'prop-snap' }));
-
-  const gridSizeIn = numInput(diagram.gridSize ?? 20, { min: 5, max: 200, step: 5 });
-  gridSizeIn.addEventListener('change', () =>
-    onChange({ gridSize: parseInt(gridSizeIn.value, 10) }));
-  canvasContent.appendChild(row('Grid size', gridSizeIn));
-
-  frag.appendChild(buildAccordion('canvas', 'Canvas', canvasContent, { open: true }));
-
-  // ── page ──
-  const pageContent = document.createElement('div');
-  pageContent.className = 'prop-section-content';
-
-  const pageNameIn = textInput(diagram.pageName ?? '', { placeholder: 'Page name…' });
-  pageNameIn.addEventListener('input', () => onChange({ pageName: pageNameIn.value }));
-  pageContent.appendChild(row('Name', pageNameIn, { wide: true }));
-
-  frag.appendChild(buildAccordion('page', 'Page', pageContent));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  MULTI-SELECTION PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildMultiProperties(items, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  const info = document.createElement('p');
-  info.className = 'prop-multi-info';
-  info.textContent = `${items.length} items selected`;
-  frag.appendChild(info);
-
-  // shared fill color
-  const fillContent = document.createElement('div');
-  fillContent.className = 'prop-section-content';
-
-  const firstFill = items.find(i => i.fillColor)?.fillColor ?? '#ffffff';
-  const fillColorIn = buildColorInput(firstFill, (c) => onChange({ fillColor: c }));
-  fillContent.appendChild(row('Color', fillColorIn));
-
-  frag.appendChild(buildAccordion('fill', 'Fill', fillContent, { open: true }));
-
-  // shared stroke color
-  const strokeContent = document.createElement('div');
-  strokeContent.className = 'prop-section-content';
-
-  const firstStroke = items.find(i => i.strokeColor)?.strokeColor ?? '#000000';
-  const strokeColorIn = buildColorInput(firstStroke, (c) => onChange({ strokeColor: c }));
-  strokeContent.appendChild(row('Color', strokeColorIn));
-
-  const strokeWidthIn = numInput('', { placeholder: 'mixed', step: 0.5 });
-  strokeWidthIn.addEventListener('change', () => {
-    const v = parseFloat(strokeWidthIn.value);
-    if (!isNaN(v)) onChange({ strokeWidth: v });
+    sel.appendChild(opt);
   });
-  strokeContent.appendChild(row('Width', strokeWidthIn));
-
-  frag.appendChild(buildAccordion('stroke', 'Stroke', strokeContent));
-
-  return frag;
+  sel.addEventListener('change', e => onChange(e.target.value));
+  return sel;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  PROPERTIES PANEL CONTROLLER
-// ═══════════════════════════════════════════════════════════════════════════
+function makeToggle(checked, onChange) {
+  const label = document.createElement('label');
+  label.className = 'props-toggle';
 
-export class PropertiesPanel {
-  constructor(containerEl, diagram) {
-    this._container = containerEl;
-    this._diagram = diagram;
-    this._selection = [];
-    this._pendingRender = false;
-  }
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.checked = !!checked;
+  input.addEventListener('change', e => onChange(e.target.checked));
 
-  // ── public API ──────────────────────────────────────────────────────────
+  const slider = document.createElement('span');
+  slider.className = 'props-toggle-slider';
 
-  setDiagram(diagram) {
-    this._diagram = diagram;
-    this._scheduleRender();
-  }
-
-  setSelection(items) {
-    this._selection = items ?? [];
-    this._scheduleRender();
-  }
-
-  clear() {
-    this._selection = [];
-    this._render();
-  }
-
-  // ── rendering ───────────────────────────────────────────────────────────
-
-  _scheduleRender() {
-    if (this._pendingRender) return;
-    this._pendingRender = true;
-    requestAnimationFrame(() => {
-      this._pendingRender = false;
-      this._render();
-    });
-  }
-
-  _render() {
-    const c = this._container;
-    c.innerHTML = '';
-
-    const sel = this._selection;
-
-    if (sel.length === 0) {
-      // nothing selected → show diagram properties
-      const header = document.createElement('div');
-      header.className = 'prop-panel-header';
-      header.textContent = 'Diagram';
-      c.appendChild(header);
-
-      const frag = buildDiagramProperties(this._diagram, (patch) => {
-        Object.assign(this._diagram, patch);
-        this._diagram.emit?.('change', { type: 'diagram', patch });
-      });
-      c.appendChild(frag);
-      return;
-    }
-
-    if (sel.length > 1) {
-      const header = document.createElement('div');
-      header.className = 'prop-panel-header';
-      header.textContent = `Selection (${sel.length})`;
-      c.appendChild(header);
-
-      const frag = buildMultiProperties(sel, this._diagram, (patch) => {
-        for (const item of sel) {
-          Object.assign(item, patch);
-          this._diagram.emit?.('change', { type: 'multi', ids: sel.map(i => i.id), patch });
-        }
-      });
-      c.appendChild(frag);
-      return;
-    }
-
-    const item = sel[0];
-    const header = document.createElement('div');
-    header.className = 'prop-panel-header';
-    header.textContent = _itemTypeLabel(item);
-    c.appendChild(header);
-
-    const emit = (patch) => {
-      Object.assign(item, patch);
-      this._diagram.emit?.('change', { type: 'item', id: item.id, patch });
-    };
-
-    let frag;
-    switch (item._kind) {
-      case 'shape':     frag = buildShapeProperties(item, this._diagram, emit); break;
-      case 'connector': frag = buildConnectorProperties(item, this._diagram, emit); break;
-      case 'text':
-      case 'sticky':    frag = buildTextProperties(item, this._diagram, emit); break;
-      case 'image':     frag = buildImageProperties(item, this._diagram, emit); break;
-      case 'frame':     frag = buildFrameProperties(item, this._diagram, emit); break;
-      default:
-        frag = document.createDocumentFragment();
-        const msg = document.createElement('p');
-        msg.textContent = 'No editable properties.';
-        frag.appendChild(msg);
-    }
-    c.appendChild(frag);
-  }
+  label.appendChild(input);
+  label.appendChild(slider);
+  return label;
 }
 
-function _itemTypeLabel(item) {
-  const map = {
-    shape: 'Shape', connector: 'Connector', text: 'Text',
-    sticky: 'Sticky note', image: 'Image', frame: 'Frame',
-  };
-  return map[item._kind] ?? 'Element';
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  CONTEXT MENU (right-click) INTEGRATION
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildContextMenu(items, pos, diagram, callbacks) {
-  const menu = document.createElement('div');
-  menu.className = 'ctx-menu';
-  menu.style.left = pos.x + 'px';
-  menu.style.top  = pos.y + 'px';
-
-  const addItem = (label, action, opts = {}) => {
-    const li = document.createElement('div');
-    li.className = 'ctx-item' + (opts.danger ? ' danger' : '') + (opts.disabled ? ' disabled' : '');
-    li.textContent = label;
-    if (!opts.disabled) li.addEventListener('click', () => { action(); menu.remove(); });
-    menu.appendChild(li);
-  };
-
-  const addSep = () => {
-    const s = document.createElement('div');
-    s.className = 'ctx-sep';
-    menu.appendChild(s);
-  };
-
-  const sel = items;
-  const single = sel.length === 1;
-  const any = sel.length > 0;
-
-  if (any) {
-    addItem('Cut',  () => callbacks.cut?.(sel));
-    addItem('Copy', () => callbacks.copy?.(sel));
-  }
-  addItem('Paste', () => callbacks.paste?.(pos), { disabled: !callbacks.canPaste?.() });
-
-  if (any) {
-    addSep();
-    addItem('Bring to Front', () => callbacks.bringToFront?.(sel));
-    addItem('Send to Back',   () => callbacks.sendToBack?.(sel));
-    addItem('Bring Forward',  () => callbacks.bringForward?.(sel));
-    addItem('Send Backward',  () => callbacks.sendBackward?.(sel));
-  }
-
-  if (any) {
-    addSep();
-    addItem('Group',   () => callbacks.group?.(sel),   { disabled: sel.length < 2 });
-    addItem('Ungroup', () => callbacks.ungroup?.(sel), { disabled: !sel.some(i => i._kind === 'group') });
-  }
-
-  if (single) {
-    const item = sel[0];
-    if (item._kind === 'shape' || item._kind === 'text') {
-      addSep();
-      addItem('Edit label', () => callbacks.editLabel?.(item));
-    }
-    if (item._kind === 'image') {
-      addSep();
-      addItem('Replace image…', () => callbacks.replaceImage?.(item));
-    }
-    if (item._kind === 'connector') {
-      addSep();
-      addItem('Reverse direction', () => callbacks.reverseConnector?.(item));
-    }
-  }
-
-  if (any) {
-    addSep();
-    addItem('Align left',   () => callbacks.align?.(sel, 'left'));
-    addItem('Align center', () => callbacks.align?.(sel, 'center'));
-    addItem('Align right',  () => callbacks.align?.(sel, 'right'));
-    addItem('Align top',    () => callbacks.align?.(sel, 'top'));
-    addItem('Align middle', () => callbacks.align?.(sel, 'middle'));
-    addItem('Align bottom', () => callbacks.align?.(sel, 'bottom'));
-  }
-
-  if (any) {
-    addSep();
-    addItem('Lock',   () => callbacks.lock?.(sel));
-    addItem('Unlock', () => callbacks.unlock?.(sel));
-  }
-
-  if (any) {
-    addSep();
-    addItem('Delete', () => callbacks.delete?.(sel), { danger: true });
-  }
-
-  // close on outside click
-  const onOutside = (e) => {
-    if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener('mousedown', onOutside); }
-  };
-  document.addEventListener('mousedown', onOutside);
-
-  return menu;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  INLINE LABEL EDITOR
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function openInlineLabelEditor(item, canvasEl, viewMatrix, onCommit) {
-  const overlay = document.createElement('div');
-  overlay.className = 'inline-label-overlay';
-
-  const textarea = document.createElement('textarea');
-  textarea.className = 'inline-label-input';
-  textarea.value = item.label ?? item.body ?? '';
-
-  // position over item on canvas
-  const { x, y, width, height } = _itemBoundsInScreen(item, viewMatrix);
-  overlay.style.left   = x + 'px';
-  overlay.style.top    = y + 'px';
-  overlay.style.width  = width + 'px';
-  overlay.style.height = height + 'px';
-
-  overlay.appendChild(textarea);
-  canvasEl.parentElement.appendChild(overlay);
-  textarea.focus();
-  textarea.select();
-
-  const commit = () => {
-    const val = textarea.value;
-    overlay.remove();
-    onCommit(val);
-  };
-
-  textarea.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { overlay.remove(); }
-  });
-
-  overlay.addEventListener('mousedown', (e) => {
-    if (e.target === overlay) commit();
-  });
-
-  return overlay;
-}
-
-function _itemBoundsInScreen(item, mat) {
-  const x = mat.a * item.x + mat.e;
-  const y = mat.d * item.y + mat.f;
-  const w = mat.a * (item.width  ?? 120);
-  const h = mat.d * (item.height ?? 60);
-  return { x, y, width: w, height: h };
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  TOOLTIP MANAGER
-// ═══════════════════════════════════════════════════════════════════════════
-
-export class TooltipManager {
-  constructor() {
-    this._el = null;
-    this._timer = null;
-  }
-
-  show(text, x, y, delay = 600) {
-    this.hide();
-    this._timer = setTimeout(() => {
-      const el = document.createElement('div');
-      el.className = 'canvas-tooltip';
-      el.textContent = text;
-      el.style.left = (x + 12) + 'px';
-      el.style.top  = (y + 12) + 'px';
-      document.body.appendChild(el);
-      this._el = el;
-    }, delay);
-  }
-
-  hide() {
-    clearTimeout(this._timer);
-    this._el?.remove();
-    this._el = null;
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  KEYBOARD SHORTCUTS DISPLAY
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildShortcutHelp() {
-  const shortcuts = [
-    { keys: 'V',         desc: 'Select tool' },
-    { keys: 'R',         desc: 'Rectangle' },
-    { keys: 'E',         desc: 'Ellipse' },
-    { keys: 'L',         desc: 'Line / connector' },
-    { keys: 'T',         desc: 'Text' },
-    { keys: 'I',         desc: 'Image' },
-    { keys: 'F',         desc: 'Frame' },
-    { keys: 'H',         desc: 'Pan (hand) tool' },
-    { keys: 'Ctrl+Z',    desc: 'Undo' },
-    { keys: 'Ctrl+Y',    desc: 'Redo' },
-    { keys: 'Ctrl+C',    desc: 'Copy' },
-    { keys: 'Ctrl+X',    desc: 'Cut' },
-    { keys: 'Ctrl+V',    desc: 'Paste' },
-    { keys: 'Ctrl+D',    desc: 'Duplicate' },
-    { keys: 'Ctrl+A',    desc: 'Select all' },
-    { keys: 'Delete',    desc: 'Delete selected' },
-    { keys: 'Ctrl+=',   desc: 'Zoom in' },
-    { keys: 'Ctrl+-',   desc: 'Zoom out' },
-    { keys: 'Ctrl+0',   desc: 'Fit to screen' },
-    { keys: 'Ctrl+G',   desc: 'Group selection' },
-    { keys: 'Ctrl+Shift+G', desc: 'Ungroup' },
-    { keys: 'F2 / Dbl-click', desc: 'Edit label' },
-  ];
-
+function makeSlider(value, min, max, step, onChange) {
   const wrap = document.createElement('div');
-  wrap.className = 'shortcut-help';
+  wrap.className = 'props-slider-wrap';
 
-  const title = document.createElement('h3');
-  title.textContent = 'Keyboard shortcuts';
-  wrap.appendChild(title);
+  const range = document.createElement('input');
+  range.type = 'range';
+  range.className = 'props-slider';
+  range.min  = min;
+  range.max  = max;
+  range.step = step;
+  range.value = value;
 
-  const list = document.createElement('dl');
-  for (const { keys, desc } of shortcuts) {
-    const dt = document.createElement('dt');
-    dt.textContent = keys;
-    const dd = document.createElement('dd');
-    dd.textContent = desc;
-    list.appendChild(dt);
-    list.appendChild(dd);
-  }
-  wrap.appendChild(list);
+  const display = document.createElement('span');
+  display.className = 'props-slider-value';
+  display.textContent = value;
+
+  range.addEventListener('input', e => {
+    display.textContent = e.target.value;
+    onChange(+e.target.value);
+  });
+
+  wrap.appendChild(range);
+  wrap.appendChild(display);
   return wrap;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  FIND / REPLACE PANEL
-// ═══════════════════════════════════════════════════════════════════════════
+function makeButton(label, onClick, variant = 'default') {
+  const btn = document.createElement('button');
+  btn.className = `props-btn props-btn--${variant}`;
+  btn.textContent = label;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
 
-export class FindReplacePanel {
-  constructor(diagram) {
-    this._diagram = diagram;
-    this._el = null;
-    this._results = [];
-    this._cursor = -1;
-  }
+/* ─────────────────────────────────────────────
+   Mixed selection
+───────────────────────────────────────────── */
+function buildMixedSection(nodes) {
+  const { section, body } = makeSection('Selection');
 
-  open() {
-    if (this._el) { this._el.querySelector('.find-input').focus(); return; }
+  const summary = document.createElement('p');
+  summary.className = 'props-summary';
+  summary.textContent = `${nodes.length} elements selected (mixed types).`;
+  body.appendChild(summary);
 
-    const el = document.createElement('div');
-    el.className = 'find-replace-panel';
-    el.innerHTML = `
-      <div class="find-replace-row">
-        <input class="find-input" placeholder="Find…" />
-        <button class="fr-btn" data-action="prev">&#8679;</button>
-        <button class="fr-btn" data-action="next">&#8681;</button>
-        <span class="fr-count"></span>
-      </div>
-      <div class="find-replace-row">
-        <input class="replace-input" placeholder="Replace with…" />
-        <button class="fr-btn" data-action="replace">Replace</button>
-        <button class="fr-btn" data-action="replace-all">All</button>
-      </div>
-      <button class="fr-close">&#10005;</button>
-    `;
-    document.body.appendChild(el);
-    this._el = el;
+  return section;
+}
 
-    const findIn = el.querySelector('.find-input');
-    const replaceIn = el.querySelector('.replace-input');
-    const countEl = el.querySelector('.fr-count');
+/* ─────────────────────────────────────────────
+   TEXT
+───────────────────────────────────────────── */
+function buildTextSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0]; // representative
+  const multi = nodes.length > 1;
 
-    const doSearch = () => {
-      const q = findIn.value.toLowerCase();
-      this._results = q ? this._diagram.items.filter(i =>
-        (i.label ?? i.body ?? '').toLowerCase().includes(q)) : [];
-      this._cursor = this._results.length ? 0 : -1;
-      countEl.textContent = this._results.length
-        ? `${this._cursor + 1} / ${this._results.length}`
-        : (q ? '0 results' : '');
-      this._highlight();
-    };
+  // --- Typography ---
+  const { section: typo, body: typoBody } = makeSection('Typography');
 
-    findIn.addEventListener('input', doSearch);
-    findIn.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') this._step(e.shiftKey ? -1 : 1);
-      if (e.key === 'Escape') this.close();
+  // Font family
+  typoBody.appendChild(makeRow('Font family',
+    makeSelect(
+      [['sans-serif','Sans-serif'],['serif','Serif'],['monospace','Monospace'],
+       ['cursive','Cursive'],['system-ui','System UI']],
+      node.style?.fontFamily ?? 'sans-serif',
+      val => applyToNodes(nodes, editor, n => { n.style.fontFamily = val; })
+    )
+  ));
+
+  // Font size
+  typoBody.appendChild(makeRow('Font size',
+    makeNumberInput(node.style?.fontSize ?? 16, 6, 288, 1,
+      val => applyToNodes(nodes, editor, n => { n.style.fontSize = val; })
+    )
+  ));
+
+  // Font weight
+  typoBody.appendChild(makeRow('Weight',
+    makeSelect(
+      [['100','Thin'],['200','Extra-light'],['300','Light'],
+       ['400','Regular'],['500','Medium'],['600','Semi-bold'],
+       ['700','Bold'],['800','Extra-bold'],['900','Black']],
+      String(node.style?.fontWeight ?? '400'),
+      val => applyToNodes(nodes, editor, n => { n.style.fontWeight = val; })
+    )
+  ));
+
+  // Line height
+  typoBody.appendChild(makeRow('Line height',
+    makeNumberInput(node.style?.lineHeight ?? 1.4, 0.5, 5, 0.05,
+      val => applyToNodes(nodes, editor, n => { n.style.lineHeight = val; })
+    )
+  ));
+
+  // Letter spacing
+  typoBody.appendChild(makeRow('Letter spacing',
+    makeNumberInput(node.style?.letterSpacing ?? 0, -10, 40, 0.5,
+      val => applyToNodes(nodes, editor, n => { n.style.letterSpacing = val; })
+    )
+  ));
+
+  // Text align
+  typoBody.appendChild(makeRow('Align',
+    makeSelect(
+      [['left','Left'],['center','Center'],['right','Right'],['justify','Justify']],
+      node.style?.textAlign ?? 'left',
+      val => applyToNodes(nodes, editor, n => { n.style.textAlign = val; })
+    )
+  ));
+
+  // Text transform
+  typoBody.appendChild(makeRow('Transform',
+    makeSelect(
+      [['none','None'],['uppercase','Uppercase'],['lowercase','Lowercase'],
+       ['capitalize','Capitalize']],
+      node.style?.textTransform ?? 'none',
+      val => applyToNodes(nodes, editor, n => { n.style.textTransform = val; })
+    )
+  ));
+
+  frag.appendChild(typo);
+
+  // --- Color ---
+  const { section: colorSec, body: colorBody } = makeSection('Color');
+
+  colorBody.appendChild(makeRow('Text color',
+    makeColorInput(node.style?.color ?? '#000000',
+      val => applyToNodes(nodes, editor, n => { n.style.color = val; })
+    )
+  ));
+
+  colorBody.appendChild(makeRow('Background',
+    makeColorInput(node.style?.backgroundColor ?? '#ffffff',
+      val => applyToNodes(nodes, editor, n => { n.style.backgroundColor = val; })
+    )
+  ));
+
+  colorBody.appendChild(makeRow('Opacity',
+    makeSlider(node.style?.opacity ?? 1, 0, 1, 0.01,
+      val => applyToNodes(nodes, editor, n => { n.style.opacity = val; })
+    )
+  ));
+
+  frag.appendChild(colorSec);
+
+  // --- Spacing ---
+  const { section: spaceSec, body: spaceBody } = makeSection('Spacing', true);
+
+  ['top','right','bottom','left'].forEach(side => {
+    spaceBody.appendChild(makeRow(`Padding ${side}`,
+      makeNumberInput(node.style?.padding?.[side] ?? 0, 0, 200, 1,
+        val => applyToNodes(nodes, editor, n => {
+          n.style.padding = n.style.padding || {};
+          n.style.padding[side] = val;
+        })
+      )
+    ));
+  });
+
+  frag.appendChild(spaceSec);
+
+  // --- Advanced ---
+  const { section: advSec, body: advBody } = makeSection('Advanced', true);
+
+  advBody.appendChild(makeRow('ID',
+    makeTextInput(node.id, val => {
+      editor.setNodeId(node, val);
+    })
+  ));
+
+  advBody.appendChild(makeRow('CSS class',
+    makeTextInput(node.className ?? '',
+      val => applyToNodes(nodes, editor, n => { n.className = val; })
+    )
+  ));
+
+  frag.appendChild(advSec);
+
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   IMAGE
+───────────────────────────────────────────── */
+function buildImageSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  // --- Source ---
+  const { section: srcSec, body: srcBody } = makeSection('Source');
+
+  srcBody.appendChild(makeRow('URL',
+    makeTextInput(node.src ?? '',
+      val => applyToNodes(nodes, editor, n => { n.src = val; })
+    )
+  ));
+
+  srcBody.appendChild(makeRow('Alt text',
+    makeTextInput(node.alt ?? '',
+      val => applyToNodes(nodes, editor, n => { n.alt = val; })
+    )
+  ));
+
+  // Replace button
+  const replaceBtn = makeButton('Replace image…', () => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'image/*';
+    input.addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = ev => {
+        applyToNodes(nodes, editor, n => { n.src = ev.target.result; });
+      };
+      reader.readAsDataURL(file);
     });
+    input.click();
+  }, 'secondary');
+  srcBody.appendChild(replaceBtn);
 
-    el.addEventListener('click', (e) => {
-      const action = e.target.dataset.action;
-      if (action === 'next')  this._step(1);
-      if (action === 'prev')  this._step(-1);
-      if (action === 'replace') {
-        const cur = this._results[this._cursor];
-        if (cur) {
-          const key = cur.label !== undefined ? 'label' : 'body';
-          cur[key] = replaceIn.value;
-          this._diagram.emit?.('change', { type: 'item', id: cur.id, patch: { [key]: replaceIn.value } });
-          doSearch();
-        }
+  frag.appendChild(srcSec);
+
+  // --- Layout ---
+  const { section: layoutSec, body: layoutBody } = makeSection('Layout');
+
+  layoutBody.appendChild(makeRow('Object fit',
+    makeSelect(
+      [['fill','Fill'],['contain','Contain'],['cover','Cover'],
+       ['none','None'],['scale-down','Scale-down']],
+      node.style?.objectFit ?? 'cover',
+      val => applyToNodes(nodes, editor, n => { n.style.objectFit = val; })
+    )
+  ));
+
+  layoutBody.appendChild(makeRow('Object position',
+    makeTextInput(node.style?.objectPosition ?? 'center center',
+      val => applyToNodes(nodes, editor, n => { n.style.objectPosition = val; })
+    )
+  ));
+
+  layoutBody.appendChild(makeRow('Width',
+    makeNumberInput(node.style?.width ?? '', 1, 8000, 1,
+      val => applyToNodes(nodes, editor, n => { n.style.width = val; })
+    )
+  ));
+
+  layoutBody.appendChild(makeRow('Height',
+    makeNumberInput(node.style?.height ?? '', 1, 8000, 1,
+      val => applyToNodes(nodes, editor, n => { n.style.height = val; })
+    )
+  ));
+
+  layoutBody.appendChild(makeRow('Border radius',
+    makeNumberInput(node.style?.borderRadius ?? 0, 0, 9999, 1,
+      val => applyToNodes(nodes, editor, n => { n.style.borderRadius = val; })
+    )
+  ));
+
+  frag.appendChild(layoutSec);
+
+  // --- Filters ---
+  const { section: filterSec, body: filterBody } = makeSection('Filters', true);
+
+  const filters = parseFilters(node.style?.filter ?? '');
+
+  filterBody.appendChild(makeRow('Brightness',
+    makeSlider(filters.brightness ?? 1, 0, 3, 0.01,
+      val => {
+        filters.brightness = val;
+        applyToNodes(nodes, editor, n => { n.style.filter = serializeFilters(filters); });
       }
-      if (action === 'replace-all') {
-        const val = replaceIn.value;
-        for (const item of this._results) {
-          const key = item.label !== undefined ? 'label' : 'body';
-          item[key] = val;
-          this._diagram.emit?.('change', { type: 'item', id: item.id, patch: { [key]: val } });
-        }
-        doSearch();
+    )
+  ));
+
+  filterBody.appendChild(makeRow('Contrast',
+    makeSlider(filters.contrast ?? 1, 0, 3, 0.01,
+      val => {
+        filters.contrast = val;
+        applyToNodes(nodes, editor, n => { n.style.filter = serializeFilters(filters); });
       }
-    });
+    )
+  ));
 
-    el.querySelector('.fr-close').addEventListener('click', () => this.close());
-    findIn.focus();
-  }
+  filterBody.appendChild(makeRow('Saturation',
+    makeSlider(filters.saturate ?? 1, 0, 3, 0.01,
+      val => {
+        filters.saturate = val;
+        applyToNodes(nodes, editor, n => { n.style.filter = serializeFilters(filters); });
+      }
+    )
+  ));
 
-  close() {
-    this._el?.remove();
-    this._el = null;
-    this._results = [];
-    this._cursor = -1;
-    this._diagram.emit?.('change', { type: 'highlight-clear' });
-  }
+  filterBody.appendChild(makeRow('Blur (px)',
+    makeSlider(filters.blur ?? 0, 0, 40, 0.5,
+      val => {
+        filters.blur = val;
+        applyToNodes(nodes, editor, n => { n.style.filter = serializeFilters(filters); });
+      }
+    )
+  ));
 
-  _step(dir) {
-    if (!this._results.length) return;
-    this._cursor = (this._cursor + dir + this._results.length) % this._results.length;
-    const countEl = this._el?.querySelector('.fr-count');
-    if (countEl) countEl.textContent = `${this._cursor + 1} / ${this._results.length}`;
-    this._highlight();
-    this._diagram.emit?.('change', {
-      type: 'scroll-to', id: this._results[this._cursor].id,
-    });
-  }
+  filterBody.appendChild(makeRow('Grayscale',
+    makeSlider(filters.grayscale ?? 0, 0, 1, 0.01,
+      val => {
+        filters.grayscale = val;
+        applyToNodes(nodes, editor, n => { n.style.filter = serializeFilters(filters); });
+      }
+    )
+  ));
 
-  _highlight() {
-    this._diagram.emit?.('change', {
-      type: 'highlight', ids: this._results.map(i => i.id),
-    });
-  }
+  frag.appendChild(filterSec);
+
+  // --- Opacity ---
+  const { section: opSec, body: opBody } = makeSection('Opacity');
+  opBody.appendChild(makeRow('Opacity',
+    makeSlider(node.style?.opacity ?? 1, 0, 1, 0.01,
+      val => applyToNodes(nodes, editor, n => { n.style.opacity = val; })
+    )
+  ));
+  frag.appendChild(opSec);
+
+  return frag;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  LAYER / Z-ORDER PANEL
-// ═══════════════════════════════════════════════════════════════════════════
+/* ─────────────────────────────────────────────
+   SHAPE
+───────────────────────────────────────────── */
+function buildShapeSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
 
-export function buildLayerPanel(items, onReorder, onToggleVisible, onToggleLock) {
-  const el = document.createElement('div');
-  el.className = 'layer-panel';
+  // --- Geometry ---
+  const { section: geoSec, body: geoBody } = makeSection('Geometry');
 
-  const header = document.createElement('div');
-  header.className = 'layer-panel-header';
-  header.textContent = 'Layers';
-  el.appendChild(header);
+  geoBody.appendChild(makeRow('Shape type',
+    makeSelect(
+      [['rect','Rectangle'],['circle','Circle'],['ellipse','Ellipse'],
+       ['triangle','Triangle'],['diamond','Diamond'],['pentagon','Pentagon'],
+       ['hexagon','Hexagon'],['star','Star'],['arrow','Arrow'],
+       ['parallelogram','Parallelogram'],['trapezoid','Trapezoid'],
+       ['cross','Cross'],['cloud','Cloud'],['cylinder','Cylinder']],
+      node.shapeType ?? 'rect',
+      val => applyToNodes(nodes, editor, n => { n.shapeType = val; editor.refreshShape(n); })
+    )
+  ));
 
-  const list = document.createElement('div');
-  list.className = 'layer-list';
+  geoBody.appendChild(makeRow('Width',
+    makeNumberInput(node.width ?? 100, 1, 8000, 1,
+      val => applyToNodes(nodes, editor, n => { n.width = val; })
+    )
+  ));
 
-  const render = () => {
-    list.innerHTML = '';
-    // show in reverse z-order (top first)
-    for (let i = items.length - 1; i >= 0; i--) {
-      const item = items[i];
-      const row = document.createElement('div');
-      row.className = 'layer-row' + (item._selected ? ' selected' : '');
-      row.dataset.id = item.id;
+  geoBody.appendChild(makeRow('Height',
+    makeNumberInput(node.height ?? 100, 1, 8000, 1,
+      val => applyToNodes(nodes, editor, n => { n.height = val; })
+    )
+  ));
 
-      const visBtn = document.createElement('button');
-      visBtn.className = 'layer-vis-btn';
-      visBtn.title = item._hidden ? 'Show' : 'Hide';
-      visBtn.innerHTML = item._hidden
-        ? '<svg viewBox="0 0 16 16"><path d="M2 8s2.5-5 6-5 6 5 6 5-2.5 5-6 5-6-5-6-5z" fill="none" stroke="currentColor"/><line x1="2" y1="2" x2="14" y2="14" stroke="currentColor"/></svg>'
-        : '<svg viewBox="0 0 16 16"><path d="M2 8s2.5-5 6-5 6 5 6 5-2.5 5-6 5-6-5-6-5z" fill="none" stroke="currentColor"/><circle cx="8" cy="8" r="2" fill="currentColor"/></svg>';
-      visBtn.addEventListener('click', () => onToggleVisible(item));
+  geoBody.appendChild(makeRow('X position',
+    makeNumberInput(node.x ?? 0, -99999, 99999, 1,
+      val => applyToNodes(nodes, editor, n => { n.x = val; })
+    )
+  ));
 
-      const lockBtn = document.createElement('button');
-      lockBtn.className = 'layer-lock-btn';
-      lockBtn.title = item._locked ? 'Unlock' : 'Lock';
-      lockBtn.innerHTML = item._locked
-        ? '<svg viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="8" rx="1" fill="none" stroke="currentColor"/><path d="M5 7V5a3 3 0 016 0v2" fill="none" stroke="currentColor"/></svg>'
-        : '<svg viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="8" rx="1" fill="none" stroke="currentColor"/><path d="M5 7V5a3 3 0 016 0" fill="none" stroke="currentColor"/></svg>';
-      lockBtn.addEventListener('click', () => onToggleLock(item));
+  geoBody.appendChild(makeRow('Y position',
+    makeNumberInput(node.y ?? 0, -99999, 99999, 1,
+      val => applyToNodes(nodes, editor, n => { n.y = val; })
+    )
+  ));
 
-      const label = document.createElement('span');
-      label.className = 'layer-label';
-      label.textContent = item.label ?? item.body ?? item._kind ?? 'Item';
+  geoBody.appendChild(makeRow('Rotation (°)',
+    makeNumberInput(node.rotation ?? 0, -360, 360, 1,
+      val => applyToNodes(nodes, editor, n => { n.rotation = val; })
+    )
+  ));
 
-      row.appendChild(visBtn);
-      row.appendChild(lockBtn);
-      row.appendChild(label);
-      list.appendChild(row);
-    }
-  };
+  frag.appendChild(geoSec);
 
-  render();
-  el.appendChild(list);
-  return { el, refresh: render };
+  // --- Fill ---
+  const { section: fillSec, body: fillBody } = makeSection('Fill');
+
+  fillBody.appendChild(makeRow('Fill color',
+    makeColorInput(node.fill ?? '#4f9eff',
+      val => applyToNodes(nodes, editor, n => { n.fill = val; })
+    )
+  ));
+
+  fillBody.appendChild(makeRow('Fill opacity',
+    makeSlider(node.fillOpacity ?? 1, 0, 1, 0.01,
+      val => applyToNodes(nodes, editor, n => { n.fillOpacity = val; })
+    )
+  ));
+
+  fillBody.appendChild(makeRow('Fill style',
+    makeSelect(
+      [['solid','Solid'],['none','None'],['hatch','Hatch'],['dots','Dots'],
+       ['cross','Cross-hatch'],['gradient-linear','Linear gradient'],
+       ['gradient-radial','Radial gradient']],
+      node.fillStyle ?? 'solid',
+      val => applyToNodes(nodes, editor, n => { n.fillStyle = val; })
+    )
+  ));
+
+  frag.appendChild(fillSec);
+
+  // --- Stroke ---
+  const { section: strokeSec, body: strokeBody } = makeSection('Stroke');
+
+  strokeBody.appendChild(makeRow('Stroke color',
+    makeColorInput(node.stroke ?? '#2c6fad',
+      val => applyToNodes(nodes, editor, n => { n.stroke = val; })
+    )
+  ));
+
+  strokeBody.appendChild(makeRow('Stroke width',
+    makeNumberInput(node.strokeWidth ?? 1, 0, 50, 0.5,
+      val => applyToNodes(nodes, editor, n => { n.strokeWidth = val; })
+    )
+  ));
+
+  strokeBody.appendChild(makeRow('Stroke style',
+    makeSelect(
+      [['solid','Solid'],['dashed','Dashed'],['dotted','Dotted'],
+       ['dash-dot','Dash-dot'],['none','None']],
+      node.strokeStyle ?? 'solid',
+      val => applyToNodes(nodes, editor, n => { n.strokeStyle = val; })
+    )
+  ));
+
+  strokeBody.appendChild(makeRow('Stroke join',
+    makeSelect(
+      [['miter','Miter'],['round','Round'],['bevel','Bevel']],
+      node.strokeJoin ?? 'miter',
+      val => applyToNodes(nodes, editor, n => { n.strokeJoin = val; })
+    )
+  ));
+
+  frag.appendChild(strokeSec);
+
+  // --- Shadow ---
+  const { section: shadowSec, body: shadowBody } = makeSection('Shadow', true);
+
+  shadowBody.appendChild(makeRow('Enable shadow',
+    makeToggle(node.shadow?.enabled ?? false,
+      val => applyToNodes(nodes, editor, n => {
+        n.shadow = n.shadow || {};
+        n.shadow.enabled = val;
+      })
+    )
+  ));
+
+  shadowBody.appendChild(makeRow('Shadow color',
+    makeColorInput(node.shadow?.color ?? '#00000066',
+      val => applyToNodes(nodes, editor, n => {
+        n.shadow = n.shadow || {};
+        n.shadow.color = val;
+      })
+    )
+  ));
+
+  shadowBody.appendChild(makeRow('Offset X',
+    makeNumberInput(node.shadow?.offsetX ?? 4, -100, 100, 1,
+      val => applyToNodes(nodes, editor, n => {
+        n.shadow = n.shadow || {};
+        n.shadow.offsetX = val;
+      })
+    )
+  ));
+
+  shadowBody.appendChild(makeRow('Offset Y',
+    makeNumberInput(node.shadow?.offsetY ?? 4, -100, 100, 1,
+      val => applyToNodes(nodes, editor, n => {
+        n.shadow = n.shadow || {};
+        n.shadow.offsetY = val;
+      })
+    )
+  ));
+
+  shadowBody.appendChild(makeRow('Blur',
+    makeNumberInput(node.shadow?.blur ?? 8, 0, 100, 1,
+      val => applyToNodes(nodes, editor, n => {
+        n.shadow = n.shadow || {};
+        n.shadow.blur = val;
+      })
+    )
+  ));
+
+  shadowBody.appendChild(makeRow('Spread',
+    makeNumberInput(node.shadow?.spread ?? 0, -50, 50, 1,
+      val => applyToNodes(nodes, editor, n => {
+        n.shadow = n.shadow || {};
+        n.shadow.spread = val;
+      })
+    )
+  ));
+
+  frag.appendChild(shadowSec);
+
+  // --- Opacity ---
+  const { section: opSec, body: opBody } = makeSection('Opacity');
+  opBody.appendChild(makeRow('Opacity',
+    makeSlider(node.opacity ?? 1, 0, 1, 0.01,
+      val => applyToNodes(nodes, editor, n => { n.opacity = val; })
+    )
+  ));
+  frag.appendChild(opSec);
+
+  return frag;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  STYLE PRESETS
-// ═══════════════════════════════════════════════════════════════════════════
+/* ─────────────────────────────────────────────
+   TABLE
+───────────────────────────────────────────── */
+function buildTableSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
 
-const STYLE_PRESETS = [
-  { id: 'default',  label: 'Default',    fillColor: '#ffffff', strokeColor: '#333333', strokeWidth: 1.5 },
-  { id: 'primary',  label: 'Primary',    fillColor: '#4a90e2', strokeColor: '#2c6fbd', strokeWidth: 0, textColor: '#ffffff' },
-  { id: 'success',  label: 'Success',    fillColor: '#5cb85c', strokeColor: '#3e8e41', strokeWidth: 0, textColor: '#ffffff' },
-  { id: 'warning',  label: 'Warning',    fillColor: '#f0ad4e', strokeColor: '#c87f0a', strokeWidth: 0, textColor: '#ffffff' },
-  { id: 'danger',   label: 'Danger',     fillColor: '#d9534f', strokeColor: '#b52b27', strokeWidth: 0, textColor: '#ffffff' },
-  { id: 'subtle',   label: 'Subtle',     fillColor: '#f5f5f5', strokeColor: '#cccccc', strokeWidth: 1 },
-  { id: 'dark',     label: 'Dark',       fillColor: '#333333', strokeColor: '#111111', strokeWidth: 0, textColor: '#ffffff' },
-  { id: 'ghost',    label: 'Ghost',      fillColor: 'none',    strokeColor: '#333333', strokeWidth: 1.5, strokeStyle: 'dashed' },
-];
+  // --- Structure ---
+  const { section: strSec, body: strBody } = makeSection('Structure');
 
-export function buildStylePresets(onApply) {
-  const el = document.createElement('div');
-  el.className = 'style-presets';
+  strBody.appendChild(makeRow('Rows',
+    makeNumberInput(node.rows ?? 3, 1, 200, 1,
+      val => applyToNodes(nodes, editor, n => {
+        editor.resizeTable(n, { rows: val });
+      })
+    )
+  ));
 
-  for (const preset of STYLE_PRESETS) {
-    const btn = document.createElement('button');
-    btn.className = 'style-preset-btn';
-    btn.title = preset.label;
-    btn.style.background = preset.fillColor === 'none' ? 'transparent' : preset.fillColor;
-    btn.style.border = `2px solid ${preset.strokeColor}`;
-    btn.style.color = preset.textColor ?? '#333333';
-    btn.textContent = preset.label[0];
-    btn.addEventListener('click', () => onApply({ ...preset }));
-    el.appendChild(btn);
-  }
+  strBody.appendChild(makeRow('Columns',
+    makeNumberInput(node.cols ?? 3, 1, 50, 1,
+      val => applyToNodes(nodes, editor, n => {
+        editor.resizeTable(n, { cols: val });
+      })
+    )
+  ));
 
-  return el;
+  strBody.appendChild(makeRow('Header row',
+    makeToggle(node.headerRow ?? true,
+      val => applyToNodes(nodes, editor, n => { n.headerRow = val; })
+    )
+  ));
+
+  strBody.appendChild(makeRow('Header col',
+    makeToggle(node.headerCol ?? false,
+      val => applyToNodes(nodes, editor, n => { n.headerCol = val; })
+    )
+  ));
+
+  strBody.appendChild(makeRow('Stripe rows',
+    makeToggle(node.stripeRows ?? false,
+      val => applyToNodes(nodes, editor, n => { n.stripeRows = val; })
+    )
+  ));
+
+  frag.appendChild(strSec);
+
+  // --- Appearance ---
+  const { section: appSec, body: appBody } = makeSection('Appearance');
+
+  appBody.appendChild(makeRow('Cell padding',
+    makeNumberInput(node.cellPadding ?? 8, 0, 60, 1,
+      val => applyToNodes(nodes, editor, n => { n.cellPadding = val; })
+    )
+  ));
+
+  appBody.appendChild(makeRow('Border width',
+    makeNumberInput(node.borderWidth ?? 1, 0, 20, 1,
+      val => applyToNodes(nodes, editor, n => { n.borderWidth = val; })
+    )
+  ));
+
+  appBody.appendChild(makeRow('Border color',
+    makeColorInput(node.borderColor ?? '#cccccc',
+      val => applyToNodes(nodes, editor, n => { n.borderColor = val; })
+    )
+  ));
+
+  appBody.appendChild(makeRow('Header bg',
+    makeColorInput(node.headerBg ?? '#f0f4ff',
+      val => applyToNodes(nodes, editor, n => { n.headerBg = val; })
+    )
+  ));
+
+  appBody.appendChild(makeRow('Header color',
+    makeColorInput(node.headerColor ?? '#1a1a2e',
+      val => applyToNodes(nodes, editor, n => { n.headerColor = val; })
+    )
+  ));
+
+  appBody.appendChild(makeRow('Stripe color',
+    makeColorInput(node.stripeColor ?? '#f8f9fc',
+      val => applyToNodes(nodes, editor, n => { n.stripeColor = val; })
+    )
+  ));
+
+  frag.appendChild(appSec);
+
+  return frag;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  SMART LABELS — auto-fit text inside shape
-// ═══════════════════════════════════════════════════════════════════════════
+/* ─────────────────────────────────────────────
+   CODE BLOCK
+───────────────────────────────────────────── */
+function buildCodeSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
 
-const _measureCanvas = document.createElement('canvas');
-const _mctx = _measureCanvas.getContext('2d');
+  // --- Language ---
+  const { section: langSec, body: langBody } = makeSection('Code');
 
-export function fitFontSize(text, width, height, fontFamily, bold, italic,
-  minSize = 8, maxSize = 72) {
-  if (!text) return maxSize;
-  const style = `${italic ? 'italic ' : ''}${bold ? 'bold ' : ''}`;
-  let lo = minSize, hi = maxSize;
-  while (lo < hi - 1) {
-    const mid = (lo + hi) >> 1;
-    _mctx.font = `${style}${mid}px ${fontFamily}`;
-    const lines = text.split('\n');
-    const maxW = Math.max(...lines.map(l => _mctx.measureText(l).width));
-    const totalH = mid * 1.3 * lines.length;
-    if (maxW <= width * 0.9 && totalH <= height * 0.9) lo = mid;
-    else hi = mid;
-  }
-  return lo;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  MARKDOWN-AWARE TEXT RENDER  (used in text / sticky items)
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function renderMarkdownText(text, containerEl, opts = {}) {
-  const { fontSize = 14, fontFamily = 'sans-serif', color = '#000000',
-    bold = false, italic = false, align = 'left' } = opts;
-
-  containerEl.innerHTML = '';
-  containerEl.style.fontSize   = fontSize + 'px';
-  containerEl.style.fontFamily = fontFamily;
-  containerEl.style.color      = color;
-  containerEl.style.fontWeight  = bold   ? 'bold'   : 'normal';
-  containerEl.style.fontStyle   = italic ? 'italic' : 'normal';
-  containerEl.style.textAlign   = align;
-
-  const lines = (text ?? '').split('\n');
-  for (const line of lines) {
-    const p = document.createElement('p');
-    p.innerHTML = _inlineMarkdown(line);
-    containerEl.appendChild(p);
-  }
-}
-
-function _inlineMarkdown(line) {
-  return line
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-    .replace(/\*(.+?)\*/g,     '<em>$1</em>')
-    .replace(/`(.+?)`/g,       '<code>$1</code>')
-    .replace(/~~(.+?)~~/g,     '<del>$1</del>')
-    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank">$1</a>');
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  EXPORT HELPERS
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildExportPanel(diagram, onExport) {
-  const el = document.createElement('div');
-  el.className = 'export-panel';
-
-  const formats = [
-    { id: 'png',  label: 'PNG image' },
-    { id: 'svg',  label: 'SVG vector' },
-    { id: 'pdf',  label: 'PDF document' },
-    { id: 'json', label: 'JSON data' },
+  const LANGUAGES = [
+    ['plaintext','Plain text'],['javascript','JavaScript'],['typescript','TypeScript'],
+    ['python','Python'],['rust','Rust'],['go','Go'],['java','Java'],
+    ['c','C'],['cpp','C++'],['csharp','C#'],['php','PHP'],['ruby','Ruby'],
+    ['swift','Swift'],['kotlin','Kotlin'],['scala','Scala'],['dart','Dart'],
+    ['html','HTML'],['css','CSS'],['scss','SCSS'],['less','LESS'],
+    ['json','JSON'],['yaml','YAML'],['toml','TOML'],['xml','XML'],
+    ['sql','SQL'],['graphql','GraphQL'],['bash','Bash/Shell'],
+    ['powershell','PowerShell'],['dockerfile','Dockerfile'],
+    ['markdown','Markdown'],['latex','LaTeX'],
   ];
 
-  for (const fmt of formats) {
-    const btn = document.createElement('button');
-    btn.className = 'export-btn';
-    btn.textContent = `Export ${fmt.label}`;
-    btn.addEventListener('click', () => onExport(fmt.id));
-    el.appendChild(btn);
-  }
+  langBody.appendChild(makeRow('Language',
+    makeSelect(LANGUAGES, node.language ?? 'plaintext',
+      val => applyToNodes(nodes, editor, n => { n.language = val; })
+    )
+  ));
 
-  // quality slider (PNG)
-  const qualityWrap = document.createElement('div');
-  qualityWrap.className = 'export-quality-wrap';
-  const qualityLbl = document.createElement('label');
-  qualityLbl.textContent = 'PNG scale: ';
-  const qualityIn = document.createElement('input');
-  qualityIn.type  = 'range';
-  qualityIn.min   = '1';
-  qualityIn.max   = '4';
-  qualityIn.step  = '0.5';
-  qualityIn.value = '2';
-  const qualityVal = document.createElement('span');
-  qualityVal.textContent = '2×';
-  qualityIn.addEventListener('input', () => {
-    qualityVal.textContent = qualityIn.value + '×';
-    diagram._exportScale = parseFloat(qualityIn.value);
+  langBody.appendChild(makeRow('Theme',
+    makeSelect(
+      [['dark','Dark'],['light','Light'],['monokai','Monokai'],
+       ['solarized-dark','Solarized Dark'],['solarized-light','Solarized Light'],
+       ['github','GitHub'],['dracula','Dracula'],['nord','Nord'],
+       ['one-dark','One Dark'],['gruvbox','Gruvbox']],
+      node.codeTheme ?? 'dark',
+      val => applyToNodes(nodes, editor, n => { n.codeTheme = val; })
+    )
+  ));
+
+  langBody.appendChild(makeRow('Show line nos.',
+    makeToggle(node.showLineNumbers ?? true,
+      val => applyToNodes(nodes, editor, n => { n.showLineNumbers = val; })
+    )
+  ));
+
+  langBody.appendChild(makeRow('Word wrap',
+    makeToggle(node.wordWrap ?? false,
+      val => applyToNodes(nodes, editor, n => { n.wordWrap = val; })
+    )
+  ));
+
+  langBody.appendChild(makeRow('Tab size',
+    makeSelect(
+      [['2','2 spaces'],['4','4 spaces'],['8','8 spaces']],
+      String(node.tabSize ?? 2),
+      val => applyToNodes(nodes, editor, n => { n.tabSize = +val; })
+    )
+  ));
+
+  langBody.appendChild(makeRow('Font size',
+    makeNumberInput(node.codeFontSize ?? 13, 8, 32, 1,
+      val => applyToNodes(nodes, editor, n => { n.codeFontSize = val; })
+    )
+  ));
+
+  frag.appendChild(langSec);
+
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   EMBED
+───────────────────────────────────────────── */
+function buildEmbedSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section: embedSec, body: embedBody } = makeSection('Embed');
+
+  embedBody.appendChild(makeRow('URL',
+    makeTextInput(node.embedUrl ?? '',
+      val => applyToNodes(nodes, editor, n => { n.embedUrl = val; })
+    )
+  ));
+
+  embedBody.appendChild(makeRow('Width',
+    makeNumberInput(node.width ?? 640, 100, 8000, 1,
+      val => applyToNodes(nodes, editor, n => { n.width = val; })
+    )
+  ));
+
+  embedBody.appendChild(makeRow('Height',
+    makeNumberInput(node.height ?? 480, 60, 8000, 1,
+      val => applyToNodes(nodes, editor, n => { n.height = val; })
+    )
+  ));
+
+  embedBody.appendChild(makeRow('Allow fullscreen',
+    makeToggle(node.allowFullscreen ?? true,
+      val => applyToNodes(nodes, editor, n => { n.allowFullscreen = val; })
+    )
+  ));
+
+  embedBody.appendChild(makeRow('Sandbox',
+    makeTextInput(node.sandbox ?? 'allow-scripts allow-same-origin',
+      val => applyToNodes(nodes, editor, n => { n.sandbox = val; })
+    )
+  ));
+
+  frag.appendChild(embedSec);
+
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   CONNECTOR
+───────────────────────────────────────────── */
+function buildConnectorSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  // --- Line ---
+  const { section: lineSec, body: lineBody } = makeSection('Line');
+
+  lineBody.appendChild(makeRow('Stroke color',
+    makeColorInput(node.stroke ?? '#5b5f97',
+      val => applyToNodes(nodes, editor, n => { n.stroke = val; })
+    )
+  ));
+
+  lineBody.appendChild(makeRow('Stroke width',
+    makeNumberInput(node.strokeWidth ?? 2, 0.5, 40, 0.5,
+      val => applyToNodes(nodes, editor, n => { n.strokeWidth = val; })
+    )
+  ));
+
+  lineBody.appendChild(makeRow('Stroke style',
+    makeSelect(
+      [['solid','Solid'],['dashed','Dashed'],['dotted','Dotted'],['dash-dot','Dash-dot']],
+      node.strokeStyle ?? 'solid',
+      val => applyToNodes(nodes, editor, n => { n.strokeStyle = val; })
+    )
+  ));
+
+  lineBody.appendChild(makeRow('Line type',
+    makeSelect(
+      [['straight','Straight'],['curved','Curved'],['orthogonal','Orthogonal'],
+       ['elbowed','Elbowed']],
+      node.lineType ?? 'straight',
+      val => applyToNodes(nodes, editor, n => { n.lineType = val; })
+    )
+  ));
+
+  frag.appendChild(lineSec);
+
+  // --- Arrows ---
+  const { section: arrowSec, body: arrowBody } = makeSection('Arrows');
+
+  arrowBody.appendChild(makeRow('Start arrow',
+    makeSelect(
+      [['none','None'],['arrow','Arrow'],['filled-arrow','Filled arrow'],
+       ['circle','Circle'],['diamond','Diamond'],['open','Open'],
+       ['half','Half-arrow'],['many','Crow’s foot — many'],
+       ['one','Crow’s foot — one'],['zero-many','Zero or many'],
+       ['one-many','One or many']],
+      node.startArrow ?? 'none',
+      val => applyToNodes(nodes, editor, n => { n.startArrow = val; })
+    )
+  ));
+
+  arrowBody.appendChild(makeRow('End arrow',
+    makeSelect(
+      [['none','None'],['arrow','Arrow'],['filled-arrow','Filled arrow'],
+       ['circle','Circle'],['diamond','Diamond'],['open','Open'],
+       ['half','Half-arrow'],['many','Crow’s foot — many'],
+       ['one','Crow’s foot — one'],['zero-many','Zero or many'],
+       ['one-many','One or many']],
+      node.endArrow ?? 'arrow',
+      val => applyToNodes(nodes, editor, n => { n.endArrow = val; })
+    )
+  ));
+
+  frag.appendChild(arrowSec);
+
+  // --- Label ---
+  const { section: labelSec, body: labelBody } = makeSection('Label', true);
+
+  labelBody.appendChild(makeRow('Label text',
+    makeTextInput(node.label ?? '',
+      val => applyToNodes(nodes, editor, n => { n.label = val; })
+    )
+  ));
+
+  labelBody.appendChild(makeRow('Label position',
+    makeSelect(
+      [['center','Center'],['start','Start'],['end','End']],
+      node.labelPosition ?? 'center',
+      val => applyToNodes(nodes, editor, n => { n.labelPosition = val; })
+    )
+  ));
+
+  labelBody.appendChild(makeRow('Label offset',
+    makeNumberInput(node.labelOffset ?? 0, -200, 200, 1,
+      val => applyToNodes(nodes, editor, n => { n.labelOffset = val; })
+    )
+  ));
+
+  frag.appendChild(labelSec);
+
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   GROUP
+───────────────────────────────────────────── */
+function buildGroupSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section: grpSec, body: grpBody } = makeSection('Group');
+
+  grpBody.appendChild(makeRow('Members',
+    (() => {
+      const span = document.createElement('span');
+      span.className = 'props-value';
+      span.textContent = node.children?.length ?? 0;
+      return span;
+    })()
+  ));
+
+  grpBody.appendChild(makeRow('Clip content',
+    makeToggle(node.clipContent ?? false,
+      val => applyToNodes(nodes, editor, n => { n.clipContent = val; })
+    )
+  ));
+
+  grpBody.appendChild(makeRow('Lock aspect',
+    makeToggle(node.lockAspect ?? false,
+      val => applyToNodes(nodes, editor, n => { n.lockAspect = val; })
+    )
+  ));
+
+  const ungroupBtn = makeButton('Ungroup', () => {
+    editor.ungroup(nodes);
+  }, 'danger');
+  grpBody.appendChild(ungroupBtn);
+
+  frag.appendChild(grpSec);
+
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   FRAME
+───────────────────────────────────────────── */
+function buildFrameSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  // --- Frame info ---
+  const { section: frameSec, body: frameBody } = makeSection('Frame');
+
+  frameBody.appendChild(makeRow('Name',
+    makeTextInput(node.name ?? '',
+      val => applyToNodes(nodes, editor, n => { n.name = val; })
+    )
+  ));
+
+  frameBody.appendChild(makeRow('Width',
+    makeNumberInput(node.width ?? 1280, 100, 16000, 1,
+      val => applyToNodes(nodes, editor, n => { n.width = val; })
+    )
+  ));
+
+  frameBody.appendChild(makeRow('Height',
+    makeNumberInput(node.height ?? 720, 60, 16000, 1,
+      val => applyToNodes(nodes, editor, n => { n.height = val; })
+    )
+  ));
+
+  frameBody.appendChild(makeRow('Background',
+    makeColorInput(node.background ?? '#ffffff',
+      val => applyToNodes(nodes, editor, n => { n.background = val; })
+    )
+  ));
+
+  frameBody.appendChild(makeRow('Show title',
+    makeToggle(node.showTitle ?? true,
+      val => applyToNodes(nodes, editor, n => { n.showTitle = val; })
+    )
+  ));
+
+  frameBody.appendChild(makeRow('Clip children',
+    makeToggle(node.clipChildren ?? true,
+      val => applyToNodes(nodes, editor, n => { n.clipChildren = val; })
+    )
+  ));
+
+  frag.appendChild(frameSec);
+
+  // --- Presets ---
+  const { section: presetSec, body: presetBody } = makeSection('Size presets', true);
+
+  const presets = [
+    ['1920 × 1080', 1920, 1080],
+    ['1280 × 720',  1280,  720],
+    ['1366 × 768',  1366,  768],
+    ['2560 × 1440', 2560, 1440],
+    ['3840 × 2160', 3840, 2160],
+    ['A4 portrait',   794, 1123],
+    ['A4 landscape', 1123,  794],
+    ['Letter',        816, 1056],
+    ['Instagram square',  1080, 1080],
+    ['Instagram story',    1080, 1920],
+    ['Twitter banner',     1500,  500],
+    ['LinkedIn cover',     1584,  396],
+  ];
+
+  const presetGrid = document.createElement('div');
+  presetGrid.className = 'props-preset-grid';
+  presets.forEach(([label, w, h]) => {
+    const btn = makeButton(label, () => {
+      applyToNodes(nodes, editor, n => { n.width = w; n.height = h; });
+    }, 'ghost');
+    presetGrid.appendChild(btn);
   });
-  qualityWrap.appendChild(qualityLbl);
-  qualityWrap.appendChild(qualityIn);
-  qualityWrap.appendChild(qualityVal);
-  el.appendChild(qualityWrap);
+  presetBody.appendChild(presetGrid);
 
-  return el;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  MINI-MAP
-// ═══════════════════════════════════════════════════════════════════════════
-
-export class MiniMap {
-  constructor(canvasEl, diagram) {
-    this._canvas = canvasEl;
-    this._diagram = diagram;
-    this._ctx = canvasEl.getContext('2d');
-    this._dragging = false;
-    this._bindEvents();
-  }
-
-  render(viewBounds) {
-    const ctx = this._ctx;
-    const W = this._canvas.width;
-    const H = this._canvas.height;
-    const items = this._diagram.items ?? [];
-
-    // compute diagram bounding box
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const item of items) {
-      minX = Math.min(minX, item.x ?? 0);
-      minY = Math.min(minY, item.y ?? 0);
-      maxX = Math.max(maxX, (item.x ?? 0) + (item.width ?? 0));
-      maxY = Math.max(maxY, (item.y ?? 0) + (item.height ?? 0));
-    }
-    if (!isFinite(minX)) { minX = 0; minY = 0; maxX = 1000; maxY = 600; }
-
-    const dW = maxX - minX || 1;
-    const dH = maxY - minY || 1;
-    const scale = Math.min(W / dW, H / dH) * 0.9;
-    const offX = (W - dW * scale) / 2 - minX * scale;
-    const offY = (H - dH * scale) / 2 - minY * scale;
-
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = '#f0f0f0';
-    ctx.fillRect(0, 0, W, H);
-
-    // draw items
-    for (const item of items) {
-      const x = (item.x ?? 0) * scale + offX;
-      const y = (item.y ?? 0) * scale + offY;
-      const w = (item.width  ?? 40) * scale;
-      const h = (item.height ?? 20) * scale;
-      ctx.fillStyle = item.fillColor ?? '#cccccc';
-      ctx.fillRect(x, y, w, h);
-    }
-
-    // draw viewport rectangle
-    if (viewBounds) {
-      const vx = viewBounds.x * scale + offX;
-      const vy = viewBounds.y * scale + offY;
-      const vw = viewBounds.width  * scale;
-      const vh = viewBounds.height * scale;
-      ctx.strokeStyle = '#2979ff';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(vx, vy, vw, vh);
-      ctx.fillStyle = 'rgba(41,121,255,0.08)';
-      ctx.fillRect(vx, vy, vw, vh);
-    }
-  }
-
-  _bindEvents() {
-    this._canvas.addEventListener('mousedown', (e) => {
-      this._dragging = true;
-      this._navigateTo(e);
-    });
-    this._canvas.addEventListener('mousemove', (e) => {
-      if (this._dragging) this._navigateTo(e);
-    });
-    window.addEventListener('mouseup', () => { this._dragging = false; });
-  }
-
-  _navigateTo(e) {
-    const rect = this._canvas.getBoundingClientRect();
-    const px = (e.clientX - rect.left) / rect.width;
-    const py = (e.clientY - rect.top)  / rect.height;
-    this._diagram.emit?.('change', { type: 'minimap-navigate', px, py });
-  }
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  COLOR PALETTE  (recent / swatches)
-// ═══════════════════════════════════════════════════════════════════════════
-
-const SWATCH_COLORS = [
-  '#000000', '#ffffff', '#f44336', '#e91e63', '#9c27b0', '#673ab7',
-  '#3f51b5', '#2196f3', '#03a9f4', '#00bcd4', '#009688', '#4caf50',
-  '#8bc34a', '#cddc39', '#ffeb3b', '#ffc107', '#ff9800', '#ff5722',
-  '#795548', '#9e9e9e', '#607d8b', '#37474f',
-];
-
-let _recentColors = [];
-
-export function buildSwatchPalette(onPick) {
-  const el = document.createElement('div');
-  el.className = 'swatch-palette';
-
-  if (_recentColors.length) {
-    const recentHdr = document.createElement('div');
-    recentHdr.className = 'swatch-section-label';
-    recentHdr.textContent = 'Recent';
-    el.appendChild(recentHdr);
-
-    const recentRow = document.createElement('div');
-    recentRow.className = 'swatch-row';
-    for (const c of _recentColors) {
-      recentRow.appendChild(_swatch(c, onPick));
-    }
-    el.appendChild(recentRow);
-  }
-
-  const allHdr = document.createElement('div');
-  allHdr.className = 'swatch-section-label';
-  allHdr.textContent = 'Colors';
-  el.appendChild(allHdr);
-
-  const grid = document.createElement('div');
-  grid.className = 'swatch-grid';
-  for (const c of SWATCH_COLORS) {
-    grid.appendChild(_swatch(c, (picked) => {
-      _recentColors = [picked, ..._recentColors.filter(x => x !== picked)].slice(0, 8);
-      onPick(picked);
-    }));
-  }
-  el.appendChild(grid);
-  return el;
-}
-
-function _swatch(color, onPick) {
-  const s = document.createElement('button');
-  s.className = 'color-swatch';
-  s.style.background = color;
-  s.title = color;
-  s.addEventListener('click', () => onPick(color));
-  return s;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  PROPERTY BINDING — live update helper
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function bindProp(el, eventName, diagram, itemId, propKey, transform = v => v) {
-  el.addEventListener(eventName, () => {
-    const item = diagram.items.find(i => i.id === itemId);
-    if (!item) return;
-    const raw = el.type === 'checkbox' ? el.checked
-      : el.type === 'number' ? parseFloat(el.value)
-      : el.value;
-    const val = transform(raw);
-    item[propKey] = val;
-    diagram.emit?.('change', { type: 'item', id: itemId, patch: { [propKey]: val } });
-  });
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  TABLE SHAPE PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildTableProperties(table, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  // ── geometry ──
-  const geoContent = document.createElement('div');
-  geoContent.className = 'prop-section-content';
-
-  const xIn = numInput(Math.round(table.x), { step: 1 });
-  const yIn = numInput(Math.round(table.y), { step: 1 });
-  xIn.addEventListener('change', () => onChange({ x: parseFloat(xIn.value) }));
-  yIn.addEventListener('change', () => onChange({ y: parseFloat(yIn.value) }));
-  const xyRow = document.createElement('div');
-  xyRow.className = 'prop-row twin';
-  xyRow.appendChild(row('X', xIn));
-  xyRow.appendChild(row('Y', yIn));
-  geoContent.appendChild(xyRow);
-
-  frag.appendChild(buildAccordion('geometry', 'Geometry', geoContent, { open: true }));
-
-  // ── table settings ──
-  const tableContent = document.createElement('div');
-  tableContent.className = 'prop-section-content';
-
-  const rowsIn = numInput(table.rows ?? 3, { min: 1, max: 50, step: 1 });
-  rowsIn.addEventListener('change', () =>
-    onChange({ rows: parseInt(rowsIn.value, 10) }));
-  tableContent.appendChild(row('Rows', rowsIn));
-
-  const colsIn = numInput(table.cols ?? 3, { min: 1, max: 20, step: 1 });
-  colsIn.addEventListener('change', () =>
-    onChange({ cols: parseInt(colsIn.value, 10) }));
-  tableContent.appendChild(row('Columns', colsIn));
-
-  const headerChk = checkBox(table.hasHeader ?? true, 'prop-table-header');
-  headerChk.addEventListener('change', () => onChange({ hasHeader: headerChk.checked }));
-  tableContent.appendChild(row('Header row', headerChk, { for: 'prop-table-header' }));
-
-  const headerBgIn = buildColorInput(table.headerBg ?? '#4a90e2', (c) =>
-    onChange({ headerBg: c }));
-  tableContent.appendChild(row('Header color', headerBgIn));
-
-  const cellPadIn = numInput(table.cellPadding ?? 6, { min: 0, max: 40, step: 1 });
-  cellPadIn.addEventListener('change', () =>
-    onChange({ cellPadding: parseInt(cellPadIn.value, 10) }));
-  tableContent.appendChild(row('Cell padding', cellPadIn));
-
-  frag.appendChild(buildAccordion('table', 'Table', tableContent, { open: true }));
+  frag.appendChild(presetSec);
 
   return frag;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  CHART SHAPE PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildChartProperties(chart, diagram, onChange) {
+/* ─────────────────────────────────────────────
+   GENERIC fallback
+───────────────────────────────────────────── */
+function buildGenericSection(nodes, editor) {
   const frag = document.createDocumentFragment();
+  const node  = nodes[0];
 
-  const chartContent = document.createElement('div');
-  chartContent.className = 'prop-section-content';
+  const { section, body } = makeSection('Properties');
 
-  const typeSel = selectInput([
-    ['bar', 'Bar'], ['line', 'Line'], ['pie', 'Pie'],
-    ['donut', 'Donut'], ['scatter', 'Scatter'],
-  ], chart.chartType ?? 'bar');
-  typeSel.addEventListener('change', () => onChange({ chartType: typeSel.value }));
-  chartContent.appendChild(row('Type', typeSel));
-
-  const titleIn = textInput(chart.chartTitle ?? '', { placeholder: 'Chart title…' });
-  titleIn.addEventListener('input', () => onChange({ chartTitle: titleIn.value }));
-  chartContent.appendChild(row('Title', titleIn, { wide: true }));
-
-  const legendChk = checkBox(chart.showLegend ?? true, 'prop-chart-legend');
-  legendChk.addEventListener('change', () => onChange({ showLegend: legendChk.checked }));
-  chartContent.appendChild(row('Legend', legendChk, { for: 'prop-chart-legend' }));
-
-  frag.appendChild(buildAccordion('chart', 'Chart', chartContent, { open: true }));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  CODE BLOCK PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildCodeBlockProperties(block, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  const codeContent = document.createElement('div');
-  codeContent.className = 'prop-section-content';
-
-  const langSel = selectInput([
-    ['text', 'Plain text'], ['javascript', 'JavaScript'], ['typescript', 'TypeScript'],
-    ['python', 'Python'], ['java', 'Java'], ['csharp', 'C#'],
-    ['cpp', 'C++'], ['go', 'Go'], ['rust', 'Rust'],
-    ['html', 'HTML'], ['css', 'CSS'], ['sql', 'SQL'],
-    ['json', 'JSON'], ['yaml', 'YAML'], ['shell', 'Shell'],
-  ], block.language ?? 'text');
-  langSel.addEventListener('change', () => onChange({ language: langSel.value }));
-  codeContent.appendChild(row('Language', langSel));
-
-  const themeSel = selectInput([
-    ['github-light', 'GitHub Light'], ['github-dark', 'GitHub Dark'],
-    ['monokai', 'Monokai'], ['solarized-light', 'Solarized Light'],
-    ['dracula', 'Dracula'],
-  ], block.theme ?? 'github-light');
-  themeSel.addEventListener('change', () => onChange({ theme: themeSel.value }));
-  codeContent.appendChild(row('Theme', themeSel));
-
-  const lineNumChk = checkBox(block.showLineNumbers ?? true, 'prop-code-lines');
-  lineNumChk.addEventListener('change', () => onChange({ showLineNumbers: lineNumChk.checked }));
-  codeContent.appendChild(row('Line numbers', lineNumChk, { for: 'prop-code-lines' }));
-
-  frag.appendChild(buildAccordion('code', 'Code block', codeContent, { open: true }));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  SWIMLANE PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildSwimlaneProperties(lane, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  const laneContent = document.createElement('div');
-  laneContent.className = 'prop-section-content';
-
-  const orientSel = selectInput([
-    ['horizontal', 'Horizontal'], ['vertical', 'Vertical'],
-  ], lane.orientation ?? 'horizontal');
-  orientSel.addEventListener('change', () => onChange({ orientation: orientSel.value }));
-  laneContent.appendChild(row('Orientation', orientSel));
-
-  const lanesIn = numInput(lane.laneCount ?? 3, { min: 1, max: 20, step: 1 });
-  lanesIn.addEventListener('change', () =>
-    onChange({ laneCount: parseInt(lanesIn.value, 10) }));
-  laneContent.appendChild(row('Lanes', lanesIn));
-
-  const headerBgIn = buildColorInput(lane.headerBg ?? '#4a90e2', (c) =>
-    onChange({ headerBg: c }));
-  laneContent.appendChild(row('Header color', headerBgIn));
-
-  const headerHeightIn = numInput(lane.headerHeight ?? 30, { min: 20, max: 120, step: 2 });
-  headerHeightIn.addEventListener('change', () =>
-    onChange({ headerHeight: parseInt(headerHeightIn.value, 10) }));
-  laneContent.appendChild(row('Header height', headerHeightIn));
-
-  frag.appendChild(buildAccordion('swimlane', 'Swimlane', laneContent, { open: true }));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  SECTION (group container) PROPERTIES
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildSectionProperties(section, diagram, onChange) {
-  const frag = document.createDocumentFragment();
-
-  const secContent = document.createElement('div');
-  secContent.className = 'prop-section-content';
-
-  const nameIn = textInput(section.name ?? '', { placeholder: 'Section name…' });
-  nameIn.addEventListener('input', () => onChange({ name: nameIn.value }));
-  secContent.appendChild(row('Name', nameIn, { wide: true }));
-
-  const bgColorIn = buildColorInput(section.bgColor ?? '#e8f0fe', (c) =>
-    onChange({ bgColor: c }));
-  secContent.appendChild(row('Background', bgColorIn));
-
-  const borderColorIn = buildColorInput(section.borderColor ?? '#4a90e2', (c) =>
-    onChange({ borderColor: c }));
-  secContent.appendChild(row('Border', borderColorIn));
-
-  const borderWidthIn = numInput(section.borderWidth ?? 1, { min: 0, max: 10, step: 0.5 });
-  borderWidthIn.addEventListener('change', () =>
-    onChange({ borderWidth: parseFloat(borderWidthIn.value) }));
-  secContent.appendChild(row('Border width', borderWidthIn));
-
-  const paddingIn = numInput(section.padding ?? 16, { min: 0, max: 80, step: 2 });
-  paddingIn.addEventListener('change', () =>
-    onChange({ padding: parseInt(paddingIn.value, 10) }));
-  secContent.appendChild(row('Padding', paddingIn));
-
-  frag.appendChild(buildAccordion('section', 'Section', secContent, { open: true }));
-
-  return frag;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  QUICK ACTIONS TOOLBAR (floating above selection)
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildQuickActions(items, pos, callbacks) {
-  const bar = document.createElement('div');
-  bar.className = 'quick-actions-bar';
-  bar.style.left = pos.x + 'px';
-  bar.style.top  = (pos.y - 44) + 'px';
-
-  const btn = (title, svg, action) => {
-    const b = document.createElement('button');
-    b.className = 'qa-btn';
-    b.title = title;
-    b.innerHTML = svg;
-    b.addEventListener('click', action);
-    return b;
-  };
-
-  bar.appendChild(btn('Bold', '<svg viewBox="0 0 10 12"><text x="1" y="10" font-weight="bold" font-size="11">B</text></svg>',
-    () => callbacks.toggleBold?.(items)));
-  bar.appendChild(btn('Italic', '<svg viewBox="0 0 10 12"><text x="2" y="10" font-style="italic" font-size="11">I</text></svg>',
-    () => callbacks.toggleItalic?.(items)));
-  bar.appendChild(btn('Delete', '<svg viewBox="0 0 16 16"><polyline points="3,4 13,4"/><path d="M5 4V2h6v2M6 7v5M10 7v5" fill="none" stroke="currentColor"/></svg>',
-    () => callbacks.delete?.(items)));
-  bar.appendChild(btn('Duplicate', '<svg viewBox="0 0 16 16"><rect x="2" y="4" width="9" height="9" fill="none" stroke="currentColor"/><rect x="5" y="2" width="9" height="9" fill="none" stroke="currentColor"/></svg>',
-    () => callbacks.duplicate?.(items)));
-
-  return bar;
-}
-
-// ═══════════════════════════════════════════════════════════════════════════
-//  HELP / ONBOARDING OVERLAY
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function buildOnboardingOverlay(onDismiss) {
-  const overlay = document.createElement('div');
-  overlay.className = 'onboarding-overlay';
-
-  const card = document.createElement('div');
-  card.className = 'onboarding-card';
-
-  card.innerHTML = `
-    <h2>Welcome to DiagramForce</h2>
-    <p>Create beautiful diagrams with an intuitive drag-and-drop interface.</p>
-    <ul>
-      <li>Use the <strong>toolbar</strong> to add shapes, connectors, and text.</li>
-      <li>Click a shape to <strong>select</strong> it and edit its properties in the right panel.</li>
-      <li>Drag connectors between shapes to <strong>link</strong> them.</li>
-      <li>Use <strong>Ctrl+Z / Ctrl+Y</strong> to undo and redo.</li>
-    </ul>
-    <button class="onboarding-dismiss">Get started</button>
-  `;
-
-  overlay.appendChild(card);
-  card.querySelector('.onboarding-dismiss').addEventListener('click', () => {
-    overlay.remove();
-    onDismiss?.();
+  // Dump enumerable own properties as text rows
+  const skip = new Set(['id','type','children','__internal']);
+  Object.keys(node).filter(k => !skip.has(k)).forEach(key => {
+    const val = node[key];
+    if (typeof val === 'object' && val !== null) return; // skip nested
+    body.appendChild(makeRow(key,
+      makeTextInput(String(val ?? ''),
+        newVal => applyToNodes(nodes, editor, n => { n[key] = newVal; })
+      )
+    ));
   });
 
-  return overlay;
+  frag.appendChild(section);
+  return frag;
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-//  COLOR UTILITIES  (hex ↔ rgb ↔ hsl)
-// ═══════════════════════════════════════════════════════════════════════════
-
-export function hexToRgb(hex) {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  return m ? { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) } : null;
+/* ─────────────────────────────────────────────
+   Utilities
+───────────────────────────────────────────── */
+function applyToNodes(nodes, editor, fn) {
+  editor.batch(() => nodes.forEach(fn));
 }
 
-export function rgbToHex({ r, g, b }) {
-  const h = (n) => n.toString(16).padStart(2, '0');
-  return `#${h(r)}${h(g)}${h(b)}`;
-}
-
-export function rgbToHsl({ r, g, b }) {
-  r /= 255; g /= 255; b /= 255;
-  const max = Math.max(r, g, b), min = Math.min(r, g, b);
-  let h, s;
-  const l = (max + min) / 2;
-  if (max === min) { h = s = 0; }
-  else {
-    const d = max - min;
-    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
-    switch (max) {
-      case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
-      case g: h = ((b - r) / d + 2) / 6; break;
-      case b: h = ((r - g) / d + 4) / 6; break;
-    }
-  }
-  return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
-}
-
-export function hslToRgb({ h, s, l }) {
-  h /= 360; s /= 100; l /= 100;
-  let r, g, b;
-  if (s === 0) { r = g = b = l; }
-  else {
-    const hue2rgb = (p, q, t) => {
-      if (t < 0) t += 1;
-      if (t > 1) t -= 1;
-      if (t < 1/6) return p + (q - p) * 6 * t;
-      if (t < 1/2) return q;
-      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
-      return p;
-    };
-    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
-    const p = 2 * l - q;
-    r = hue2rgb(p, q, h + 1/3);
-    g = hue2rgb(p, q, h);
-    b = hue2rgb(p, q, h - 1/3);
-  }
-  return { r: Math.round(r * 255), g: Math.round(g * 255), b: Math.round(b * 255) };
-}
-
-export function lighten(hex, amount = 0.1) {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return hex;
-  const hsl = rgbToHsl(rgb);
-  hsl.l = Math.min(100, hsl.l + Math.round(amount * 100));
-  return rgbToHex(hslToRgb(hsl));
-}
-
-export function darken(hex, amount = 0.1) {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return hex;
-  const hsl = rgbToHsl(rgb);
-  hsl.l = Math.max(0, hsl.l - Math.round(amount * 100));
-  return rgbToHex(hslToRgb(hsl));
-}
-
-export function colorWithAlpha(hex, alpha) {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
-  if (!m) return hex;
-  return `rgba(${parseInt(m[1],16)},${parseInt(m[2],16)},${parseInt(m[3],16)},${alpha})`;
-}
-
-export function contrastColor(hex) {
-  const rgb = hexToRgb(hex);
-  if (!rgb) return '#000000';
-  const lum = 0.2126 * _lin(rgb.r) + 0.7152 * _lin(rgb.g) + 0.0722 * _lin(rgb.b);
-  return lum > 0.179 ? '#000000' : '#ffffff';
-}
-
-function _lin(c) {
-  c /= 255;
-  return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
-}
-
-export function parseColor(str) {
-  if (!str) return null;
-  str = str.trim();
-  if (/^#[0-9a-f]{3}$/i.test(str)) {
-    return '#' + str[1]+str[1] + str[2]+str[2] + str[3]+str[3];
-  }
-  if (/^#[0-9a-f]{6}$/i.test(str)) return str;
-  const m = str.match(/^rgb\((\d+),(\d+),(\d+)\)$/);
-  if (m) return rgbToHex({ r: +m[1], g: +m[2], b: +m[3] });
-  return null;
-}
-
-export function mixColors(hex1, hex2, t = 0.5) {
-  const a = hexToRgb(hex1), b = hexToRgb(hex2);
-  if (!a || !b) return hex1;
-  return rgbToHex({
-    r: Math.round(a.r + (b.r - a.r) * t),
-    g: Math.round(a.g + (b.g - a.g) * t),
-    b: Math.round(a.b + (b.b - a.b) * t),
-  });
-}
-
-export function toHexColor(r, g, b) {
+function normalizeHex(raw) {
   try {
-    const h = (n) => Math.max(0, Math.min(255, Math.round(n))).toString(16).padStart(2, '0');
-    return `#${h(r)}${h(g)}${h(b)}`;
+    const s = String(raw ?? '').trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(s)) return s;
+    if (/^#[0-9a-fA-F]{3}$/.test(s)) {
+      return '#' + s[1].repeat(2) + s[2].repeat(2) + s[3].repeat(2);
+    }
+    // rgb(...)
+    const m = s.match(/^rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/);
+    if (m) {
+      const h = n => Math.max(0, Math.min(255, +n)).toString(16).padStart(2, '0');
+      return `#${h(m[1])}${h(m[2])}${h(m[3])}`;
+    }
+    return '#000000';
   } catch {
     return '#000000';
   }
 }
+
+function parseFilters(filterStr) {
+  const out = {};
+  const re = /(\w+)\(([^)]+)\)/g;
+  let m;
+  while ((m = re.exec(filterStr)) !== null) {
+    const fn  = m[1];
+    const arg = parseFloat(m[2]);
+    if (!isNaN(arg)) out[fn] = arg;
+  }
+  return out;
+}
+
+function serializeFilters(obj) {
+  return Object.entries(obj)
+    .map(([fn, val]) => {
+      if (fn === 'blur')      return `blur(${val}px)`;
+      if (fn === 'grayscale') return `grayscale(${val})`;
+      return `${fn}(${val})`;
+    })
+    .join(' ');
+}
+
+/* ─────────────────────────────────────────────
+   Additional property sections (v1.15.x additions)
+───────────────────────────────────────────── */
+
+// Accessibility panel
+export function buildAccessibilitySection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Accessibility');
+
+  body.appendChild(makeRow('ARIA label',
+    makeTextInput(node.ariaLabel ?? '',
+      val => applyToNodes(nodes, editor, n => { n.ariaLabel = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('ARIA role',
+    makeSelect(
+      [['','(none)'],['button','button'],['link','link'],['heading','heading'],
+       ['img','img'],['region','region'],['navigation','navigation'],
+       ['banner','banner'],['main','main'],['complementary','complementary'],
+       ['contentinfo','contentinfo'],['form','form'],['search','search'],
+       ['alert','alert'],['dialog','dialog'],['tooltip','tooltip'],
+       ['tabpanel','tabpanel'],['tab','tab'],['tablist','tablist']],
+      node.ariaRole ?? '',
+      val => applyToNodes(nodes, editor, n => { n.ariaRole = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Tab index',
+    makeNumberInput(node.tabIndex ?? 0, -1, 32767, 1,
+      val => applyToNodes(nodes, editor, n => { n.tabIndex = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Hidden from AT',
+    makeToggle(node.ariaHidden ?? false,
+      val => applyToNodes(nodes, editor, n => { n.ariaHidden = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Interaction / link panel
+export function buildInteractionSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Interaction');
+
+  body.appendChild(makeRow('Link URL',
+    makeTextInput(node.linkUrl ?? '',
+      val => applyToNodes(nodes, editor, n => { n.linkUrl = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Link target',
+    makeSelect(
+      [['_self','Same tab'],['_blank','New tab'],['_parent','Parent'],
+       ['_top','Top']],
+      node.linkTarget ?? '_blank',
+      val => applyToNodes(nodes, editor, n => { n.linkTarget = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Tooltip',
+    makeTextInput(node.tooltip ?? '',
+      val => applyToNodes(nodes, editor, n => { n.tooltip = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Cursor',
+    makeSelect(
+      [['default','Default'],['pointer','Pointer'],['move','Move'],
+       ['text','Text'],['crosshair','Crosshair'],['not-allowed','Not allowed'],
+       ['grab','Grab'],['zoom-in','Zoom in'],['zoom-out','Zoom out']],
+      node.cursor ?? 'default',
+      val => applyToNodes(nodes, editor, n => { n.cursor = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Draggable',
+    makeToggle(node.draggable ?? true,
+      val => applyToNodes(nodes, editor, n => { n.draggable = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Animation panel
+export function buildAnimationSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Animation');
+
+  body.appendChild(makeRow('Entrance',
+    makeSelect(
+      [['none','None'],['fade','Fade in'],['slide-up','Slide up'],
+       ['slide-down','Slide down'],['slide-left','Slide from left'],
+       ['slide-right','Slide from right'],['zoom-in','Zoom in'],
+       ['zoom-out','Zoom out'],['flip-x','Flip X'],['flip-y','Flip Y'],
+       ['bounce','Bounce'],['rotate','Rotate in']],
+      node.entranceAnim ?? 'none',
+      val => applyToNodes(nodes, editor, n => { n.entranceAnim = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Duration (ms)',
+    makeNumberInput(node.animDuration ?? 400, 50, 5000, 50,
+      val => applyToNodes(nodes, editor, n => { n.animDuration = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Delay (ms)',
+    makeNumberInput(node.animDelay ?? 0, 0, 10000, 50,
+      val => applyToNodes(nodes, editor, n => { n.animDelay = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Easing',
+    makeSelect(
+      [['ease','Ease'],['ease-in','Ease in'],['ease-out','Ease out'],
+       ['ease-in-out','Ease in-out'],['linear','Linear'],
+       ['spring','Spring'],['bounce','Bounce']],
+      node.animEasing ?? 'ease',
+      val => applyToNodes(nodes, editor, n => { n.animEasing = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Loop',
+    makeToggle(node.animLoop ?? false,
+      val => applyToNodes(nodes, editor, n => { n.animLoop = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Iterations',
+    makeNumberInput(node.animIterations ?? 1, 1, 999, 1,
+      val => applyToNodes(nodes, editor, n => { n.animIterations = val; })
+    )
+  ));
+
+  const previewBtn = makeButton('Preview animation', () => {
+    editor.previewAnimation(nodes);
+  }, 'secondary');
+  body.appendChild(previewBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Data binding panel (for template / form workflows)
+export function buildDataBindingSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Data binding', true);
+
+  body.appendChild(makeRow('Bind key',
+    makeTextInput(node.bindKey ?? '',
+      val => applyToNodes(nodes, editor, n => { n.bindKey = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Bind property',
+    makeSelect(
+      [['content','Content'],['src','Source'],['href','Link'],
+       ['style.color','Text color'],['style.backgroundColor','Background'],
+       ['style.opacity','Opacity'],['style.fontSize','Font size'],
+       ['visible','Visibility'],['disabled','Disabled']],
+      node.bindProp ?? 'content',
+      val => applyToNodes(nodes, editor, n => { n.bindProp = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Default value',
+    makeTextInput(node.bindDefault ?? '',
+      val => applyToNodes(nodes, editor, n => { n.bindDefault = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Transform expr.',
+    makeTextInput(node.bindTransform ?? '',
+      val => applyToNodes(nodes, editor, n => { n.bindTransform = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Export / share helpers
+export function buildExportSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Export', true);
+
+  const formats = [['png','PNG'],['svg','SVG'],['pdf','PDF'],
+                   ['jpg','JPEG'],['webp','WebP']];
+
+  const fmtSel = makeSelect(formats, 'png', () => {});
+  body.appendChild(makeRow('Format', fmtSel));
+
+  const scaleSel = makeSelect(
+    [['1','1×'],['2','2×'],['3','3×'],['4','4×']],
+    '2', () => {}
+  );
+  body.appendChild(makeRow('Scale', scaleSel));
+
+  const exportBtn = makeButton('Export selection', () => {
+    const fmt   = fmtSel.value;
+    const scale = +scaleSel.value;
+    editor.exportNodes(nodes, { format: fmt, scale }).then(blob => {
+      const url = URL.createObjectURL(blob);
+      const a   = document.createElement('a');
+      a.href     = url;
+      a.download = `export.${fmt}`;
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }, 'primary');
+  body.appendChild(exportBtn);
+
+  const copyBtn = makeButton('Copy as PNG', () => {
+    editor.exportNodes(nodes, { format: 'png', scale: 2 }).then(blob => {
+      const item = new ClipboardItem({ 'image/png': blob });
+      navigator.clipboard.write([item]).then(() => {
+        showToast('Copied to clipboard', 'success');
+      });
+    });
+  }, 'secondary');
+  body.appendChild(copyBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Locking & visibility
+export function buildLockSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Lock & visibility');
+
+  body.appendChild(makeRow('Locked',
+    makeToggle(node.locked ?? false,
+      val => applyToNodes(nodes, editor, n => { n.locked = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Visible',
+    makeToggle(node.visible ?? true,
+      val => applyToNodes(nodes, editor, n => { n.visible = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Print visible',
+    makeToggle(node.printVisible ?? true,
+      val => applyToNodes(nodes, editor, n => { n.printVisible = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Export visible',
+    makeToggle(node.exportVisible ?? true,
+      val => applyToNodes(nodes, editor, n => { n.exportVisible = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Comments / annotations
+export function buildCommentSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Notes', true);
+
+  const textarea = document.createElement('textarea');
+  textarea.className = 'props-textarea';
+  textarea.rows = 4;
+  textarea.value = node.notes ?? '';
+  textarea.placeholder = 'Add a note…';
+  textarea.addEventListener('change', e => {
+    applyToNodes(nodes, editor, n => { n.notes = e.target.value; });
+  });
+  body.appendChild(textarea);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Grid / snap overrides
+export function buildSnapSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Snap overrides', true);
+
+  body.appendChild(makeRow('Snap enabled',
+    makeToggle(node.snapEnabled ?? true,
+      val => applyToNodes(nodes, editor, n => { n.snapEnabled = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Snap X offset',
+    makeNumberInput(node.snapOffsetX ?? 0, -500, 500, 1,
+      val => applyToNodes(nodes, editor, n => { n.snapOffsetX = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Snap Y offset',
+    makeNumberInput(node.snapOffsetY ?? 0, -500, 500, 1,
+      val => applyToNodes(nodes, editor, n => { n.snapOffsetY = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Z-order panel
+export function buildZOrderSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Layer order');
+
+  const btnWrap = document.createElement('div');
+  btnWrap.className = 'props-btn-group';
+
+  const toFrontBtn = makeButton('Bring to front',
+    () => editor.bringToFront(nodes), 'secondary');
+  const forwardBtn = makeButton('Forward',
+    () => editor.bringForward(nodes), 'secondary');
+  const backwardBtn = makeButton('Backward',
+    () => editor.sendBackward(nodes), 'secondary');
+  const toBackBtn = makeButton('Send to back',
+    () => editor.sendToBack(nodes), 'secondary');
+
+  btnWrap.appendChild(toFrontBtn);
+  btnWrap.appendChild(forwardBtn);
+  btnWrap.appendChild(backwardBtn);
+  btnWrap.appendChild(toBackBtn);
+  body.appendChild(btnWrap);
+
+  body.appendChild(makeRow('Z index',
+    makeNumberInput(node.zIndex ?? 0, -9999, 9999, 1,
+      val => applyToNodes(nodes, editor, n => { n.zIndex = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// Transform / geometry panel shared across shape types
+export function buildTransformSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Transform');
+
+  body.appendChild(makeRow('X',
+    makeNumberInput(node.x ?? 0, -999999, 999999, 1,
+      val => applyToNodes(nodes, editor, n => { n.x = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Y',
+    makeNumberInput(node.y ?? 0, -999999, 999999, 1,
+      val => applyToNodes(nodes, editor, n => { n.y = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Width',
+    makeNumberInput(node.width ?? 100, 1, 16000, 1,
+      val => applyToNodes(nodes, editor, n => { n.width = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Height',
+    makeNumberInput(node.height ?? 100, 1, 16000, 1,
+      val => applyToNodes(nodes, editor, n => { n.height = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Rotation (°)',
+    makeNumberInput(node.rotation ?? 0, -360, 360, 0.1,
+      val => applyToNodes(nodes, editor, n => { n.rotation = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Flip H',
+    makeToggle(node.flipH ?? false,
+      val => applyToNodes(nodes, editor, n => { n.flipH = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Flip V',
+    makeToggle(node.flipV ?? false,
+      val => applyToNodes(nodes, editor, n => { n.flipV = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+// --- Extra utility: build a full inspector by composing all relevant sections ---
+export function buildFullInspector(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  if (!nodes || nodes.length === 0) {
+    frag.appendChild(emptyState());
+    return frag;
+  }
+
+  const types = [...new Set(nodes.map(n => n.type))];
+  const type  = types.length === 1 ? types[0] : 'mixed';
+
+  if (type === 'mixed') {
+    frag.appendChild(buildMixedSection(nodes));
+  } else {
+    // Core type section
+    const coreBuilders = {
+      text:      buildTextSection,
+      image:     buildImageSection,
+      shape:     buildShapeSection,
+      table:     buildTableSection,
+      code:      buildCodeSection,
+      embed:     buildEmbedSection,
+      connector: buildConnectorSection,
+      group:     buildGroupSection,
+      frame:     buildFrameSection,
+    };
+    const builder = coreBuilders[type] ?? buildGenericSection;
+    frag.appendChild(builder(nodes, editor));
+  }
+
+  // Shared supplemental sections
+  frag.appendChild(buildTransformSection(nodes, editor));
+  frag.appendChild(buildZOrderSection(nodes, editor));
+  frag.appendChild(buildLockSection(nodes, editor));
+  frag.appendChild(buildAnimationSection(nodes, editor));
+  frag.appendChild(buildInteractionSection(nodes, editor));
+  frag.appendChild(buildAccessibilitySection(nodes, editor));
+  frag.appendChild(buildDataBindingSection(nodes, editor));
+  frag.appendChild(buildExportSection(nodes, editor));
+  frag.appendChild(buildSnapSection(nodes, editor));
+  frag.appendChild(buildCommentSection(nodes, editor));
+
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Filter helpers — extended
+───────────────────────────────────────────── */
+
+export function buildFilterSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Filters');
+  const filters = parseFilters(node.style?.filter ?? '');
+
+  const filterDefs = [
+    { key: 'brightness', label: 'Brightness', min: 0, max: 3,   step: 0.01, def: 1 },
+    { key: 'contrast',   label: 'Contrast',   min: 0, max: 3,   step: 0.01, def: 1 },
+    { key: 'saturate',   label: 'Saturation', min: 0, max: 3,   step: 0.01, def: 1 },
+    { key: 'hue-rotate', label: 'Hue rotate', min: 0, max: 360, step: 1,    def: 0 },
+    { key: 'blur',       label: 'Blur (px)',  min: 0, max: 40,  step: 0.5,  def: 0 },
+    { key: 'grayscale',  label: 'Grayscale',  min: 0, max: 1,   step: 0.01, def: 0 },
+    { key: 'sepia',      label: 'Sepia',      min: 0, max: 1,   step: 0.01, def: 0 },
+    { key: 'invert',     label: 'Invert',     min: 0, max: 1,   step: 0.01, def: 0 },
+    { key: 'opacity',    label: 'Opacity',    min: 0, max: 1,   step: 0.01, def: 1 },
+  ];
+
+  filterDefs.forEach(({ key, label, min, max, step, def }) => {
+    body.appendChild(makeRow(label,
+      makeSlider(filters[key] ?? def, min, max, step,
+        val => {
+          filters[key] = val;
+          applyToNodes(nodes, editor, n => {
+            n.style = n.style || {};
+            n.style.filter = serializeFilters(filters);
+          });
+        }
+      )
+    ));
+  });
+
+  const resetBtn = makeButton('Reset filters', () => {
+    filterDefs.forEach(({ key }) => delete filters[key]);
+    applyToNodes(nodes, editor, n => {
+      n.style = n.style || {};
+      n.style.filter = '';
+    });
+    // Re-render
+    const panel = document.getElementById('properties-panel');
+    if (panel) renderProperties(editor, panel);
+  }, 'danger');
+  body.appendChild(resetBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Grid / guide helpers
+───────────────────────────────────────────── */
+
+export function buildGridSection(editor) {
+  const frag = document.createDocumentFragment();
+  const prefs = editor.getGridPrefs?.() ?? {};
+
+  const { section, body } = makeSection('Grid & guides');
+
+  body.appendChild(makeRow('Show grid',
+    makeToggle(prefs.showGrid ?? true,
+      val => editor.setGridPrefs?.({ showGrid: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Snap to grid',
+    makeToggle(prefs.snapToGrid ?? true,
+      val => editor.setGridPrefs?.({ snapToGrid: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Grid size',
+    makeNumberInput(prefs.gridSize ?? 16, 1, 256, 1,
+      val => editor.setGridPrefs?.({ gridSize: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Grid color',
+    makeColorInput(prefs.gridColor ?? '#e0e0e0',
+      val => editor.setGridPrefs?.({ gridColor: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Show guides',
+    makeToggle(prefs.showGuides ?? true,
+      val => editor.setGridPrefs?.({ showGuides: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Snap to guides',
+    makeToggle(prefs.snapToGuides ?? true,
+      val => editor.setGridPrefs?.({ snapToGuides: val })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Color-theme section
+───────────────────────────────────────────── */
+
+export function buildThemeSection(editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Canvas theme');
+
+  const themes = [
+    ['light','Light'],['dark','Dark'],['high-contrast','High contrast'],
+    ['sepia','Sepia'],['blueprint','Blueprint'],['paper','Paper'],
+  ];
+
+  body.appendChild(makeRow('Theme',
+    makeSelect(themes, editor.getTheme?.() ?? 'light',
+      val => applyTheme(editor, val)
+    )
+  ));
+
+  body.appendChild(makeRow('Background',
+    makeColorInput(editor.getCanvasBg?.() ?? '#ffffff',
+      val => editor.setCanvasBg?.(val)
+    )
+  ));
+
+  const resetThemeBtn = makeButton('Reset to default', () => {
+    applyTheme(editor, 'light');
+  }, 'ghost');
+  body.appendChild(resetThemeBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   History / undo panel
+───────────────────────────────────────────── */
+
+export function buildHistorySection(editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('History', true);
+
+  const info = document.createElement('p');
+  info.className = 'props-summary';
+  const snap = editor.getHistorySnapshot?.();
+  info.textContent = snap
+    ? `${snap.undoCount} undo step${snap.undoCount !== 1 ? 's' : ''}, \
+${snap.redoCount} redo step${snap.redoCount !== 1 ? 's' : ''}.`
+    : 'History unavailable.';
+  body.appendChild(info);
+
+  const undoBtn = makeButton('Undo', () => editor.undo?.(), 'secondary');
+  const redoBtn = makeButton('Redo', () => editor.redo?.(), 'secondary');
+  const clearBtn = makeButton('Clear history', () => {
+    confirmModal('Clear all history?', 'This cannot be undone.', () => {
+      editor.clearHistory?.();
+    });
+  }, 'danger');
+
+  const grp = document.createElement('div');
+  grp.className = 'props-btn-group';
+  grp.appendChild(undoBtn);
+  grp.appendChild(redoBtn);
+  grp.appendChild(clearBtn);
+  body.appendChild(grp);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Collaboration / presence
+───────────────────────────────────────────── */
+
+export function buildCollaborationSection(editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Collaborators', true);
+
+  const peers = editor.getPeers?.() ?? [];
+
+  if (peers.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'props-summary';
+    empty.textContent = 'No other collaborators online.';
+    body.appendChild(empty);
+  } else {
+    const list = document.createElement('ul');
+    list.className = 'props-peer-list';
+    peers.forEach(peer => {
+      const li = document.createElement('li');
+      li.className = 'props-peer';
+      const avatar = document.createElement('span');
+      avatar.className = 'props-peer-avatar';
+      avatar.style.background = peer.color ?? '#888';
+      avatar.textContent = (peer.name ?? '?')[0].toUpperCase();
+      const name = document.createElement('span');
+      name.textContent = peer.name ?? 'Anonymous';
+      li.appendChild(avatar);
+      li.appendChild(name);
+      list.appendChild(li);
+    });
+    body.appendChild(list);
+  }
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Font manager panel
+───────────────────────────────────────────── */
+
+export function buildFontManagerSection(editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Font manager', true);
+
+  const loadedFonts = editor.getLoadedFonts?.() ?? [];
+
+  const fontList = document.createElement('ul');
+  fontList.className = 'props-font-list';
+  loadedFonts.forEach(font => {
+    const li = document.createElement('li');
+    li.className = 'props-font-item';
+    li.style.fontFamily = font.family;
+    li.textContent = font.family;
+
+    const removeBtn = makeButton('×', () => {
+      editor.unloadFont?.(font.family);
+      li.remove();
+    }, 'ghost');
+    removeBtn.title = 'Remove font';
+    li.appendChild(removeBtn);
+    fontList.appendChild(li);
+  });
+  body.appendChild(fontList);
+
+  const loadInput = makeTextInput('', () => {});
+  loadInput.placeholder = 'Font family name or URL…';
+  const loadBtn = makeButton('Load font', () => {
+    const val = loadInput.value.trim();
+    if (!val) return;
+    editor.loadFont?.(val).then(() => {
+      showToast(`Font “${val}” loaded`, 'success');
+      loadInput.value = '';
+    }).catch(err => {
+      showToast(`Failed to load font: ${err.message}`, 'error');
+    });
+  }, 'secondary');
+
+  const loadRow = document.createElement('div');
+  loadRow.className = 'props-load-font-row';
+  loadRow.appendChild(loadInput);
+  loadRow.appendChild(loadBtn);
+  body.appendChild(loadRow);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Ruler / measurement
+───────────────────────────────────────────── */
+
+export function buildRulerSection(editor) {
+  const frag = document.createDocumentFragment();
+  const prefs = editor.getRulerPrefs?.() ?? {};
+
+  const { section, body } = makeSection('Ruler & measurements');
+
+  body.appendChild(makeRow('Show rulers',
+    makeToggle(prefs.showRulers ?? true,
+      val => editor.setRulerPrefs?.({ showRulers: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Unit',
+    makeSelect(
+      [['px','Pixels'],['pt','Points'],['mm','Millimetres'],
+       ['cm','Centimetres'],['in','Inches'],['%','Percent']],
+      prefs.unit ?? 'px',
+      val => editor.setRulerPrefs?.({ unit: val })
+    )
+  ));
+
+  body.appendChild(makeRow('DPI',
+    makeNumberInput(prefs.dpi ?? 96, 72, 600, 1,
+      val => editor.setRulerPrefs?.({ dpi: val })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Plugin slot: custom property panels
+───────────────────────────────────────────── */
+
+const _customSectionBuilders = [];
+
+export function registerCustomSection(buildFn) {
+  if (typeof buildFn === 'function') {
+    _customSectionBuilders.push(buildFn);
+  }
+}
+
+export function buildCustomSections(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  _customSectionBuilders.forEach(fn => {
+    try {
+      const el = fn(nodes, editor);
+      if (el) frag.appendChild(el);
+    } catch (err) {
+      console.warn('[properties] custom section error:', err);
+    }
+  });
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Paste-style helpers (copy styles from one node)
+───────────────────────────────────────────── */
+
+let _clipboardStyle = null;
+
+export function buildStyleClipboardSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Style clipboard', true);
+
+  const copyStyleBtn = makeButton('Copy style', () => {
+    _clipboardStyle = JSON.parse(JSON.stringify(node.style ?? {}));
+    showToast('Style copied', 'success');
+  }, 'secondary');
+  body.appendChild(copyStyleBtn);
+
+  const pasteStyleBtn = makeButton('Paste style', () => {
+    if (!_clipboardStyle) {
+      showToast('Nothing in style clipboard', 'warning');
+      return;
+    }
+    applyToNodes(nodes, editor, n => {
+      n.style = { ...n.style, ..._clipboardStyle };
+    });
+    showToast('Style pasted', 'success');
+  }, 'secondary');
+  body.appendChild(pasteStyleBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Search / filter panel
+───────────────────────────────────────────── */
+
+export function buildSearchSection(editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Find & select');
+
+  const searchInput = makeTextInput('', () => {});
+  searchInput.placeholder = 'Search by label, ID, or type…';
+
+  const typeFilter = makeSelect(
+    [['all','All types'],['text','Text'],['image','Image'],
+     ['shape','Shape'],['table','Table'],['code','Code'],
+     ['embed','Embed'],['connector','Connector'],
+     ['group','Group'],['frame','Frame']],
+    'all', () => {}
+  );
+
+  const searchBtn = makeButton('Find', () => {
+    const q    = searchInput.value.trim();
+    const type = typeFilter.value;
+    const results = editor.findNodes({ query: q, type: type === 'all' ? undefined : type });
+    editor.setSelection(results);
+    showToast(`${results.length} element${results.length !== 1 ? 's' : ''} selected`, 'info');
+  }, 'primary');
+
+  body.appendChild(makeRow('Query', searchInput));
+  body.appendChild(makeRow('Type', typeFilter));
+  body.appendChild(searchBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Batch-edit helpers
+───────────────────────────────────────────── */
+
+export function buildBatchEditSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Batch edit', true);
+
+  // Align
+  const alignRow = document.createElement('div');
+  alignRow.className = 'props-btn-group';
+  [['align-left','Left'],['align-center','Center H'],['align-right','Right'],
+   ['align-top','Top'],['align-middle','Center V'],['align-bottom','Bottom']]
+    .forEach(([cmd, label]) => {
+      alignRow.appendChild(makeButton(label, () => editor.alignNodes(nodes, cmd), 'ghost'));
+    });
+  body.appendChild(alignRow);
+
+  // Distribute
+  const distRow = document.createElement('div');
+  distRow.className = 'props-btn-group';
+  [['distribute-h','Distribute H'],['distribute-v','Distribute V']]
+    .forEach(([cmd, label]) => {
+      distRow.appendChild(makeButton(label, () => editor.distributeNodes(nodes, cmd), 'ghost'));
+    });
+  body.appendChild(distRow);
+
+  // Same size
+  const sizeRow = document.createElement('div');
+  sizeRow.className = 'props-btn-group';
+  [['same-width','Same width'],['same-height','Same height'],['same-size','Same size']]
+    .forEach(([cmd, label]) => {
+      sizeRow.appendChild(makeButton(label, () => editor.matchSize(nodes, cmd), 'ghost'));
+    });
+  body.appendChild(sizeRow);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Canvas-level properties
+───────────────────────────────────────────── */
+
+export function buildCanvasSection(editor) {
+  const frag = document.createDocumentFragment();
+  const info = editor.getCanvasInfo?.() ?? {};
+
+  const { section, body } = makeSection('Canvas');
+
+  body.appendChild(makeRow('Title',
+    makeTextInput(info.title ?? 'Untitled',
+      val => editor.setCanvasTitle?.(val)
+    )
+  ));
+
+  body.appendChild(makeRow('Description',
+    makeTextInput(info.description ?? '',
+      val => editor.setCanvasDescription?.(val)
+    )
+  ));
+
+  body.appendChild(makeRow('Width',
+    makeNumberInput(info.width ?? 10000, 100, 100000, 100,
+      val => editor.setCanvasSize?.({ width: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Height',
+    makeNumberInput(info.height ?? 10000, 100, 100000, 100,
+      val => editor.setCanvasSize?.({ height: val })
+    )
+  ));
+
+  body.appendChild(makeRow('Zoom',
+    makeSlider(
+      Math.round((editor.getZoom?.() ?? 1) * 100) / 100,
+      0.1, 8, 0.05,
+      val => editor.setZoom?.(val)
+    )
+  ));
+
+  body.appendChild(makeRow('Infinite canvas',
+    makeToggle(info.infinite ?? false,
+      val => editor.setCanvasInfinite?.(val)
+    )
+  ));
+
+  const fitBtn = makeButton('Fit to screen', () => editor.fitScreen?.(), 'secondary');
+  body.appendChild(fitBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Diagnostics / debug
+───────────────────────────────────────────── */
+
+export function buildDiagnosticsSection(editor) {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Diagnostics', true);
+
+  const refreshBtn = makeButton('Refresh metrics', () => {
+    const metrics = editor.getMetrics?.() ?? {};
+    pre.textContent = JSON.stringify(metrics, null, 2);
+  }, 'ghost');
+  body.appendChild(refreshBtn);
+
+  const pre = document.createElement('pre');
+  pre.className = 'props-pre';
+  pre.textContent = JSON.stringify(editor.getMetrics?.() ?? {}, null, 2);
+  body.appendChild(pre);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Color-palette picker (document swatches)
+───────────────────────────────────────────── */
+
+export function buildPaletteSection(editor) {
+  const frag = document.createDocumentFragment();
+  const palette = editor.getPalette?.() ?? [];
+
+  const { section, body } = makeSection('Document palette', true);
+
+  const swatches = document.createElement('div');
+  swatches.className = 'props-swatches';
+
+  palette.forEach(color => {
+    const btn = document.createElement('button');
+    btn.className = 'props-swatch-btn';
+    btn.title = color;
+    btn.style.background = color;
+    btn.addEventListener('click', () => {
+      // Apply to selection if any
+      const sel = editor.getSelection?.();
+      if (sel && !sel.isEmpty()) {
+        editor.batch(() => {
+          sel.getNodes().forEach(n => { n.fill = color; });
+        });
+      }
+    });
+    swatches.appendChild(btn);
+  });
+
+  body.appendChild(swatches);
+
+  const addColorInput = makeColorInput('#4f9eff', val => {});
+  const addBtn = makeButton('Add to palette', () => {
+    const colorInput = addColorInput.querySelector('input[type=color]');
+    if (colorInput) {
+      editor.addToPalette?.(colorInput.value);
+      const btn = document.createElement('button');
+      btn.className = 'props-swatch-btn';
+      btn.title = colorInput.value;
+      btn.style.background = colorInput.value;
+      swatches.appendChild(btn);
+    }
+  }, 'ghost');
+
+  body.appendChild(addColorInput);
+  body.appendChild(addBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Gradient editor (for shapes/frames)
+───────────────────────────────────────────── */
+
+export function buildGradientSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Gradient fill', true);
+
+  body.appendChild(makeRow('Type',
+    makeSelect(
+      [['none','None'],['linear','Linear'],['radial','Radial'],
+       ['conic','Conic'],['mesh','Mesh']],
+      node.gradientType ?? 'none',
+      val => applyToNodes(nodes, editor, n => { n.gradientType = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Angle (°)',
+    makeNumberInput(node.gradientAngle ?? 90, 0, 360, 1,
+      val => applyToNodes(nodes, editor, n => { n.gradientAngle = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Stop 1 color',
+    makeColorInput(node.gradientStop1 ?? '#4f9eff',
+      val => applyToNodes(nodes, editor, n => { n.gradientStop1 = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Stop 1 pos (%)',
+    makeNumberInput(node.gradientStop1Pos ?? 0, 0, 100, 1,
+      val => applyToNodes(nodes, editor, n => { n.gradientStop1Pos = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Stop 2 color',
+    makeColorInput(node.gradientStop2 ?? '#a78bfa',
+      val => applyToNodes(nodes, editor, n => { n.gradientStop2 = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Stop 2 pos (%)',
+    makeNumberInput(node.gradientStop2Pos ?? 100, 0, 100, 1,
+      val => applyToNodes(nodes, editor, n => { n.gradientStop2Pos = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Border / outline editor
+───────────────────────────────────────────── */
+
+export function buildBorderSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Border');
+
+  body.appendChild(makeRow('Color',
+    makeColorInput(node.borderColor ?? '#cccccc',
+      val => applyToNodes(nodes, editor, n => { n.borderColor = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Width',
+    makeNumberInput(node.borderWidth ?? 1, 0, 50, 0.5,
+      val => applyToNodes(nodes, editor, n => { n.borderWidth = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Style',
+    makeSelect(
+      [['solid','Solid'],['dashed','Dashed'],['dotted','Dotted'],
+       ['double','Double'],['groove','Groove'],['ridge','Ridge'],
+       ['inset','Inset'],['outset','Outset'],['none','None']],
+      node.borderStyle ?? 'solid',
+      val => applyToNodes(nodes, editor, n => { n.borderStyle = val; })
+    )
+  ));
+
+  // Per-side overrides
+  const { section: perSideSec, body: perSideBody } = makeSection('Per-side border', true);
+  ['top','right','bottom','left'].forEach(side => {
+    perSideBody.appendChild(makeRow(`${side[0].toUpperCase() + side.slice(1)} width`,
+      makeNumberInput(node.border?.[side]?.width ?? node.borderWidth ?? 1, 0, 50, 0.5,
+        val => applyToNodes(nodes, editor, n => {
+          n.border = n.border || {};
+          n.border[side] = n.border[side] || {};
+          n.border[side].width = val;
+        })
+      )
+    ));
+  });
+  frag.appendChild(perSideSec);
+
+  body.appendChild(makeRow('Radius (px)',
+    makeNumberInput(node.borderRadius ?? 0, 0, 9999, 1,
+      val => applyToNodes(nodes, editor, n => { n.borderRadius = val; })
+    )
+  ));
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Margin / padding box model editor
+───────────────────────────────────────────── */
+
+export function buildBoxModelSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Box model', true);
+
+  const sides = ['top','right','bottom','left'];
+
+  const paddingHeader = document.createElement('p');
+  paddingHeader.className = 'props-subheader';
+  paddingHeader.textContent = 'Padding';
+  body.appendChild(paddingHeader);
+
+  sides.forEach(side => {
+    body.appendChild(makeRow(side[0].toUpperCase() + side.slice(1),
+      makeNumberInput(node.padding?.[side] ?? 0, 0, 500, 1,
+        val => applyToNodes(nodes, editor, n => {
+          n.padding = n.padding || {};
+          n.padding[side] = val;
+        })
+      )
+    ));
+  });
+
+  const marginHeader = document.createElement('p');
+  marginHeader.className = 'props-subheader';
+  marginHeader.textContent = 'Margin';
+  body.appendChild(marginHeader);
+
+  sides.forEach(side => {
+    body.appendChild(makeRow(side[0].toUpperCase() + side.slice(1),
+      makeNumberInput(node.margin?.[side] ?? 0, -500, 500, 1,
+        val => applyToNodes(nodes, editor, n => {
+          n.margin = n.margin || {};
+          n.margin[side] = val;
+        })
+      )
+    ));
+  });
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Version stamp
+───────────────────────────────────────────── */
+
+export const PROPERTIES_VERSION = '1.15.7';
+
+/* ─────────────────────────────────────────────
+   Keyboard-shortcut hint panel
+───────────────────────────────────────────── */
+
+export function buildShortcutSection() {
+  const frag = document.createDocumentFragment();
+
+  const { section, body } = makeSection('Keyboard shortcuts', true);
+
+  const shortcuts = [
+    ['⌘Z / Ctrl+Z', 'Undo'],
+    ['⌘⇧Z / Ctrl+Y', 'Redo'],
+    ['⌘C', 'Copy'],
+    ['⌘V', 'Paste'],
+    ['⌘D', 'Duplicate'],
+    ['Del / Backspace', 'Delete'],
+    ['⌘A', 'Select all'],
+    ['⌘G', 'Group'],
+    ['⌘⇧G', 'Ungroup'],
+    ['⌘[', 'Send backward'],
+    ['⌘]', 'Bring forward'],
+    ['⌘⇧[', 'Send to back'],
+    ['⌘⇧]', 'Bring to front'],
+    ['Space + drag', 'Pan'],
+    ['⌘ + scroll', 'Zoom'],
+    ['F', 'Fit to screen'],
+    ['T', 'Text tool'],
+    ['R', 'Rectangle tool'],
+    ['O', 'Ellipse tool'],
+    ['L', 'Line tool'],
+    ['P', 'Pen tool'],
+    ['I', 'Image tool'],
+    ['E', 'Eraser'],
+  ];
+
+  const table = document.createElement('table');
+  table.className = 'props-shortcut-table';
+  shortcuts.forEach(([key, desc]) => {
+    const tr = document.createElement('tr');
+    const tdKey = document.createElement('td');
+    tdKey.className = 'props-shortcut-key';
+    tdKey.innerHTML = `<kbd>${key}</kbd>`;
+    const tdDesc = document.createElement('td');
+    tdDesc.textContent = desc;
+    tr.appendChild(tdKey);
+    tr.appendChild(tdDesc);
+    table.appendChild(tr);
+  });
+  body.appendChild(table);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   CSS variable / token editor
+───────────────────────────────────────────── */
+
+export function buildTokenSection(editor) {
+  const frag = document.createDocumentFragment();
+  const tokens = editor.getDesignTokens?.() ?? {};
+
+  const { section, body } = makeSection('Design tokens', true);
+
+  Object.entries(tokens).forEach(([key, val]) => {
+    const isColor = /color|fill|stroke|bg|background|border|shadow/i.test(key) &&
+                    typeof val === 'string' && val.startsWith('#');
+    const control = isColor
+      ? makeColorInput(val, newVal => editor.setDesignToken?.(key, newVal))
+      : makeTextInput(String(val), newVal => editor.setDesignToken?.(key, newVal));
+    body.appendChild(makeRow(key, control));
+  });
+
+  if (Object.keys(tokens).length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'props-summary';
+    empty.textContent = 'No design tokens defined.';
+    body.appendChild(empty);
+  }
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   Prototype / interaction flow
+───────────────────────────────────────────── */
+
+export function buildPrototypeSection(nodes, editor) {
+  const frag = document.createDocumentFragment();
+  const node  = nodes[0];
+
+  const { section, body } = makeSection('Prototype', true);
+
+  body.appendChild(makeRow('Trigger',
+    makeSelect(
+      [['click','On click'],['hover','On hover'],['focus','On focus'],
+       ['blur','On blur'],['keypress','On key press'],['load','On load']],
+      node.protoTrigger ?? 'click',
+      val => applyToNodes(nodes, editor, n => { n.protoTrigger = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Action',
+    makeSelect(
+      [['none','None'],['navigate','Navigate to'],['scroll','Scroll to'],
+       ['open-url','Open URL'],['toggle-visibility','Toggle visibility'],
+       ['play-anim','Play animation'],['run-script','Run script']],
+      node.protoAction ?? 'none',
+      val => applyToNodes(nodes, editor, n => { n.protoAction = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Target',
+    makeTextInput(node.protoTarget ?? '',
+      val => applyToNodes(nodes, editor, n => { n.protoTarget = val; })
+    )
+  ));
+
+  body.appendChild(makeRow('Transition',
+    makeSelect(
+      [['none','None'],['fade','Fade'],['slide','Slide'],
+       ['push','Push'],['cover','Cover'],['dissolve','Dissolve']],
+      node.protoTransition ?? 'none',
+      val => applyToNodes(nodes, editor, n => { n.protoTransition = val; })
+    )
+  ));
+
+  const previewBtn = makeButton('Preview flow', () => {
+    editor.previewPrototype?.(node);
+  }, 'secondary');
+  body.appendChild(previewBtn);
+
+  frag.appendChild(section);
+  return frag;
+}
+
+/* ─────────────────────────────────────────────
+   END OF FILE
+───────────────────────────────────────────── */
